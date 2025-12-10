@@ -21,3 +21,11 @@ class AIResponse(BaseModel):
 class ConsultantResponse(BaseModel):
     advice: str
     source: str
+
+class UserResponse(BaseModel):
+    id: int
+    name: str
+    loyalty_points: int
+    
+    # Pydantic V2 Config to read SQLAlchemy models
+    model_config = {"from_attributes": True}    
