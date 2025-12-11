@@ -1,8 +1,9 @@
 # app/services/ai_tools.py
 from langchain_community.utilities import SerpAPIWrapper
-from langchain.agents import Tool
+from langchain_core.tools import Tool 
 from app.core.config import settings
 
+# Initialize SerpApi Wrapper
 search = SerpAPIWrapper(serpapi_api_key=settings.SERPAPI_API_KEY)
 
 def get_campus_events(query: str):
