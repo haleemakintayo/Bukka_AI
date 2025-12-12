@@ -20,7 +20,7 @@ router = APIRouter()
 VERIFY_TOKEN = "blue_chameleon_2025"
 META_TOKEN = os.getenv("META_API_TOKEN") 
 PHONE_ID = os.getenv("WHATSAPP_PHONE_ID") 
-OWNER_PHONE = "2348012345678"  # REPLACE with actual owner number
+OWNER_PHONE = "2349068778689"  # REPLACE with actual owner number
 
 # --- 2. HELPER FUNCTIONS ---
 
