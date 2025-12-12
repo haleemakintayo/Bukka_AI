@@ -2,12 +2,11 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
-
+# --- Existing Models ---
 class WhatsAppMessage(BaseModel):
     user_id: str = Field(..., description="User's Phone Number")
     message: str
     user_name: Optional[str] = "Student"
-
 
 class OrderItem(BaseModel):
     item_name: str
@@ -30,6 +29,8 @@ class UserResponse(BaseModel):
     # Pydantic V2 Config to read SQLAlchemy models
     model_config = {"from_attributes": True}    
 
+# --- Webhook Schemas (Fixed for Meta Validation) ---
+
 class TextObject(BaseModel):
     body: str
 
@@ -39,6 +40,9 @@ class MessageObject(BaseModel):
     timestamp: str
     text: TextObject
     type: str = "text"
+    
+    # FIX 1: Ignore extra fields (like 'from_logical_id')
+    model_config = {"extra": "ignore"}
 
 class ContactProfile(BaseModel):
     name: str
@@ -50,8 +54,13 @@ class ContactObject(BaseModel):
 class ValueObject(BaseModel):
     messaging_product: str
     metadata: dict
-    contacts: List[ContactObject]
-    messages: List[MessageObject]
+    
+    # FIX 2: Make these Optional so Status Updates don't crash the app
+    contacts: Optional[List[ContactObject]] = None
+    messages: Optional[List[MessageObject]] = None
+    
+    # FIX 3: Ignore extra fields (like 'statuses')
+    model_config = {"extra": "ignore"}
 
 class ChangeObject(BaseModel):
     value: ValueObject
@@ -89,4 +98,4 @@ class WhatsAppWebhookSchema(BaseModel):
                     }]
                 }]
             }
-        }    
+        }
