@@ -138,7 +138,8 @@ async def whatsapp_webhook(
             background_tasks.add_task(send_whatsapp_message, user_phone, response_data['reply_message'])
 
     except KeyError:
-        pass
+        print(f"⚠️ MISSING DATA KEY: {e}")  # Print the missing key
+        print(f"DATA RECEIVED: {data}")      # Print what we actually got
     except Exception as e:
         print(f"Error processing webhook: {e}")
         
