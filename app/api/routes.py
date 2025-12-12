@@ -8,9 +8,9 @@ from sqlalchemy.orm import Session
 # Database Imports
 from app.core.database import get_db
 from app.models.sql_models import User, Order
-from app.models.schemas import WhatsAppMessage, ConsultantResponse,WhatsAppWebhookSchema
+from app.models.schemas import WhatsAppMessage, ConsultantResponse, WhatsAppWebhookSchema
 
-# AI Imports (LangGraph Agent + LCEL Chain)
+# AI Imports
 from app.services.llm_engine import order_chain, consultant_agent
 from app.core.config import settings
 
@@ -20,14 +20,12 @@ router = APIRouter()
 VERIFY_TOKEN = "blue_chameleon_2025"
 META_TOKEN = os.getenv("META_API_TOKEN") 
 PHONE_ID = os.getenv("WHATSAPP_PHONE_ID") 
-OWNER_PHONE = "2349060251750"  # REPLACE with actual owner number
+OWNER_PHONE = "2348012345678"  # REPLACE with actual owner number
 
 # --- 2. HELPER FUNCTIONS ---
 
 def send_whatsapp_message(to_number: str, message_text: str):
-    """
-    Sends a message via WhatsApp Cloud API.
-    """
+    """Sends a message via WhatsApp Cloud API."""
     url = f"https://graph.facebook.com/v18.0/{PHONE_ID}/messages"
     headers = {
         "Authorization": f"Bearer {META_TOKEN}",
@@ -45,20 +43,15 @@ def send_whatsapp_message(to_number: str, message_text: str):
         print(f"Error sending WhatsApp message: {e}")
 
 def handle_owner_confirmation(db: Session, message_text: str):
-    """
-    Helper to process the owner's 'CONFIRM EMEKA' command.
-    """
+    """Helper to process the owner's 'CONFIRM EMEKA' command."""
     try:
-        student_name = message_text.split()[1] # Get name after "CONFIRM"
-        # Find student in DB
+        student_name = message_text.split()[1] 
         user = db.query(User).filter(User.name.ilike(f"%{student_name}%")).first()
         if user:
-            # Find their pending order
             order = db.query(Order).filter(Order.user_id == user.id, Order.status == "Pending").first()
             if order:
                 order.status = "PAID"
                 db.commit()
-                # Notify Student
                 send_whatsapp_message(user.phone_number, "✅ Payment Confirmed! Your food is being packed.")
                 return f"Approved {student_name}'s order."
             else:
@@ -75,21 +68,17 @@ async def verify_webhook(
     token: str = Query(alias="hub.verify_token"),
     challenge: str = Query(alias="hub.challenge")
 ):
-    """Meta verification handshake"""
     if mode == "subscribe" and token == VERIFY_TOKEN:
         return int(challenge)
     raise HTTPException(status_code=403, detail="Invalid Token")
 
 @router.post("/webhook")
 async def whatsapp_webhook(
-    payload: WhatsAppWebhookSchema,  # <--- CHANGED: This forces Swagger to show the box
+    payload: WhatsAppWebhookSchema, 
     background_tasks: BackgroundTasks, 
     db: Session = Depends(get_db)
 ):
-    """
-    MAIN ENTRY POINT: Receives all WhatsApp messages.
-    """
-    # Convert Pydantic model back to a Python dictionary so your existing logic works
+    # Convert Pydantic model to dict
     data = payload.model_dump(by_alias=True)
     
     try:
@@ -126,49 +115,43 @@ async def whatsapp_webhook(
             return {"status": "payment_reported"}
 
         # 3. AI Order Logic
-        response_data = order_chain.invoke({
-            "menu": str(settings.MENU),
-            "user_input": message_text
-        })
+        try:
+            response_data = order_chain.invoke({
+                "menu": str(settings.MENU),
+                "user_input": message_text
+            })
+        except Exception as ai_error:
+            # Fallback if AI fails completely
+            print(f"AI Generation Error: {ai_error}")
+            response_data = {"intent": "CHITCHAT", "reply_message": "Sorry, network is bad. Say that again?"}
         
-        if response_data.get('intent') == "ORDER":
-            final_reply = response_data['reply_message'] + "\n\nPay to Opay: 123456. Reply 'PAID' when done."
+        # --- BUG FIX START: Safe Dictionary Access ---
+        # We use .get() so it never crashes if keys are missing
+        intent = response_data.get('intent', 'UNKNOWN')
+        ai_reply = response_data.get('reply_message', "I didn't quite understand.")
+        
+        if intent == "ORDER":
+            final_reply = ai_reply + "\n\nPay to Opay: 123456. Reply 'PAID' when done."
             background_tasks.add_task(send_whatsapp_message, user_phone, final_reply)
         else:
-            background_tasks.add_task(send_whatsapp_message, user_phone, response_data['reply_message'])
+            background_tasks.add_task(send_whatsapp_message, user_phone, ai_reply)
+        # --- BUG FIX END ---
 
-    except KeyError:
-        print(f"⚠️ MISSING DATA KEY: {e}")  # Print the missing key
-        print(f"DATA RECEIVED: {data}")      # Print what we actually got
+    except KeyError as e:
+        print(f"⚠️ MISSING DATA KEY: {e}") 
     except Exception as e:
-        print(f"Error processing webhook: {e}")
+        print(f"❌ GENERAL ERROR: {e}")
         
     return {"status": "received"}
 
-# --- 4. CONSULTANT ENDPOINT (Updated for LangGraph) ---
+# --- 4. CONSULTANT ENDPOINT ---
 @router.post("/consult", response_model=ConsultantResponse)
 async def consult_endpoint(payload: WhatsAppMessage):
-    """
-    Handles Vendor Business Questions using SerpApi + LangGraph.
-    """
     try:
-        # We define the System Prompt HERE now
         system_instruction = "You are 'Bukka AI', a smart business consultant. Use your tools to find events and prices."
-        
-        # LangGraph Input: System Message + User Message
-        inputs = {
-            "messages": [
-                ("system", system_instruction),
-                ("user", payload.message)
-            ]
-        }
-        
-        # Invoke the graph
+        inputs = {"messages": [("system", system_instruction), ("user", payload.message)]}
         response = consultant_agent.invoke(inputs)
-        
-        # Extract the final AI response (last message)
         final_answer = response["messages"][-1].content
-        
         return {"advice": final_answer, "source": "Real-time Web Data"}
     except Exception as e:
         print(f"Consultant Error: {e}")
