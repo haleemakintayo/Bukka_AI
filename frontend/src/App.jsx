@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 
 const STUDENT = { id: "student", label: "Student", phone: "2347000000000" };
 const OWNER = { id: "owner", label: "Owner", phone: "2348012345678" };
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = "https://bukka-ai-backend-523632194f78.herokuapp.com";
 
 export default function App() {
   const [persona, setPersona] = useState(STUDENT);
