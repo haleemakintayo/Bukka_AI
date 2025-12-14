@@ -21,19 +21,26 @@ export default function App() {
   };
 
   const buildPayload = (text) => ({
+    object: "whatsapp_business_account", // <--- Added
     entry: [
       {
+        id: "123456789", // <--- Added (Required by EntryObject)
         changes: [
           {
+            field: "messages",
             value: {
+              messaging_product: "whatsapp", // <--- Added (REQUIRED by ValueObject)
+              metadata: {
+                display_phone_number: "1234",
+                phone_number_id: "1234"
+              }, // <--- Added (REQUIRED by ValueObject)
               messages: [
                 {
                   from: persona.phone,
-                  to: "BukkaAI",
                   id: `msg_${Date.now()}`,
                   timestamp: Math.floor(Date.now() / 1000).toString(),
-                  type: "text",
                   text: { body: text },
+                  type: "text",
                 },
               ],
             },
