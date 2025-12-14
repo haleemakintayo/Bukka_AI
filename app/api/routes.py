@@ -2,6 +2,7 @@
 import os
 import requests
 import json
+import time  # <--- NEW: Added time import
 from fastapi import APIRouter, Depends, HTTPException, Request, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 
@@ -22,17 +23,15 @@ META_TOKEN = os.getenv("META_API_TOKEN")
 PHONE_ID = os.getenv("WHATSAPP_PHONE_ID") 
 OWNER_PHONE = "2348012345678"  # Ensure this matches your frontend OWNER phone
 
-# --- 2. DEMO MEMORY (The "Spy" for Frontend) ---
+# --- 2. DEMO MEMORY ---
 DEMO_CHATS = []
 
 @router.get("/demo/chats")
 async def get_demo_chats():
-    """Frontend polls this to show messages."""
     return DEMO_CHATS
 
 @router.post("/demo/reset")
 async def reset_demo_chats():
-    """Clear chat history."""
     global DEMO_CHATS
     DEMO_CHATS = []
     return {"status": "cleared"}
@@ -40,22 +39,23 @@ async def reset_demo_chats():
 # --- 3. HELPER FUNCTIONS ---
 
 def send_whatsapp_message(to_number: str, message_text: str):
-    """
-    Sends via Meta AND saves for the Demo Frontend.
-    """
-    print(f"📤 SENDING REPLY TO {to_number}: {message_text}") # Log it for debugging
+    """Sends via Meta AND saves for the Demo Frontend."""
+    print(f"📤 SENDING REPLY TO {to_number}: {message_text}")
     
-    # 1. Save to Memory (So Frontend can see it)
+    # 1. Save to Memory with REAL TIMESTAMP
+    # FIX: Use time.time() so it sorts correctly in the frontend
+    current_timestamp = int(time.time()) 
+    
     DEMO_CHATS.append({
         "id": f"msg_{len(DEMO_CHATS)+1}",
         "direction": "outbound",
         "from": "BukkaAI",
         "to": to_number,
         "body": message_text,
-        "timestamp": "1700000000" # Dummy timestamp or use real time
+        "timestamp": current_timestamp # <--- FIXED TIMESTAMP
     })
     
-    # 2. Try sending via Real Meta API (It's okay if this fails locally)
+    # 2. Try sending via Real Meta API
     try:
         url = f"https://graph.facebook.com/v18.0/{PHONE_ID}/messages"
         headers = {
@@ -112,14 +112,11 @@ async def whatsapp_webhook(
     background_tasks: BackgroundTasks, 
     db: Session = Depends(get_db)
 ):
-    # Convert Pydantic model to dict
     data = payload.model_dump(by_alias=True)
     
     try:
-        # Extract Message Info
         entry = data['entry'][0]['changes'][0]['value']
         
-        # Skip status updates (sent, delivered, read)
         if 'messages' not in entry or not entry['messages']:
             return {"status": "ignored"}
             
@@ -129,14 +126,16 @@ async def whatsapp_webhook(
         
         print(f"📥 RECEIVED MESSAGE from {user_phone}: {message_text}")
 
-        # --- SAVE INCOMING MSG TO DEMO CHATS ---
+        # FIX: Ensure incoming messages also have valid timestamps
+        incoming_timestamp = int(message.get('timestamp', time.time()))
+
         DEMO_CHATS.append({
-             "id": message.get('id', 'temp_id'),
+             "id": message.get('id', f'temp_{time.time()}'),
              "direction": "inbound",
              "from": user_phone,
              "to": "BukkaAI",
              "body": message_text,
-             "timestamp": message.get('timestamp', '0')
+             "timestamp": incoming_timestamp
         })
         
         # --- A. OWNER LOGIC ---
@@ -146,9 +145,6 @@ async def whatsapp_webhook(
             return {"status": "owner_action_processed"}
 
         # --- B. STUDENT LOGIC ---
-        
-        # 1. Get/Create User
-        # Handle case where contacts might be missing (direct API calls)
         user_name = "Student"
         if entry.get('contacts'):
             user_name = entry['contacts'][0]['profile']['name']
@@ -159,27 +155,40 @@ async def whatsapp_webhook(
             db.add(user)
             db.commit()
 
-        # 2. Check for Payment Report
         if "PAID" in message_text.upper():
             alert_msg = f"💰 PAYMENT ALERT: {user_name} says they paid.\nReply 'CONFIRM {user_name}' to approve."
             background_tasks.add_task(send_whatsapp_message, OWNER_PHONE, alert_msg)
             background_tasks.add_task(send_whatsapp_message, user_phone, "Okay! Asking Auntie to confirm...")
             return {"status": "payment_reported"}
 
-        # 3. AI Order Logic
+        # --- 3. AI Order Logic (FIXED) ---
         try:
             response_data = order_chain.invoke({
                 "menu": str(settings.MENU),
                 "user_input": message_text
             })
+            
+            # DEBUG PRINT: Check what the AI actually returned
+            print(f"🧠 AI RAW OUTPUT: {response_data}")
+
+            # FIX: Handle cases where AI returns 'text' or just a string
+            if isinstance(response_data, dict):
+                ai_reply = response_data.get('reply_message') or response_data.get('text') or response_data.get('output')
+                intent = response_data.get('intent', 'UNKNOWN')
+            elif isinstance(response_data, str):
+                ai_reply = response_data
+                intent = "UNKNOWN"
+            else:
+                ai_reply = None
+
+            # Fallback if AI was totally silent
+            if not ai_reply:
+                ai_reply = "I didn't quite understand. Could you rephrase?"
+
         except Exception as ai_error:
             print(f"AI Generation Error: {ai_error}")
-            # Fallback response
-            response_data = {"intent": "CHITCHAT", "reply_message": "Sorry, network is bad. Say that again?"}
-        
-        # Safe Dictionary Access
-        intent = response_data.get('intent', 'UNKNOWN')
-        ai_reply = response_data.get('reply_message', "I didn't quite understand.")
+            intent = "CHITCHAT"
+            ai_reply = "Sorry, network is bad. Say that again?"
         
         if intent == "ORDER":
             final_reply = ai_reply + "\n\nPay to Opay: 123456. Reply 'PAID' when done."
@@ -197,5 +206,4 @@ async def whatsapp_webhook(
 # --- 5. CONSULTANT ENDPOINT ---
 @router.post("/consult", response_model=ConsultantResponse)
 async def consult_endpoint(payload: WhatsAppMessage):
-    # ... (Keep your existing consultant logic here if needed) ...
     return {"advice": "Consultant active", "source": "System"}
