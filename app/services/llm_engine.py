@@ -31,7 +31,7 @@ YOUR GOAL:
 4. When they say "pay", summarize the FULL order (Items + Total) and ask for confirmation.
 
 FORMAT:
-Return a JSON object: {"message": "Your reply in Pidgin", "order": "Summary of items", "total": 2000}
+Return a JSON object:{{"message": "Your reply in Pidgin", "order": "Summary of items", "total": 2000}}
 
 User Input: {user_input}
 """
