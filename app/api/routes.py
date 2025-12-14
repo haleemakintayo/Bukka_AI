@@ -161,35 +161,47 @@ async def whatsapp_webhook(
             background_tasks.add_task(send_whatsapp_message, user_phone, "Okay! Asking Auntie to confirm...")
             return {"status": "payment_reported"}
 
-        # --- 3. AI Order Logic (FIXED) ---
+        # ... inside whatsapp_webhook function ...
+
+        # 3. AI Order Logic (DEBUG MODE)
         try:
+            print(f"🤖 ASKING AI: {message_text}")
+            
             response_data = order_chain.invoke({
                 "menu": str(settings.MENU),
                 "user_input": message_text
             })
             
-            # DEBUG PRINT: Check what the AI actually returned
+            # --- DEBUGGING: Print exact output to logs ---
             print(f"🧠 AI RAW OUTPUT: {response_data}")
-
-            # FIX: Handle cases where AI returns 'text' or just a string
+            
+            # Smart Parsing Strategy
+            ai_reply = None
+            
+            # Case 1: It's a Dictionary (Correct JSON)
             if isinstance(response_data, dict):
-                ai_reply = response_data.get('reply_message') or response_data.get('text') or response_data.get('output')
+                ai_reply = response_data.get('reply_message') or \
+                           response_data.get('text') or \
+                           response_data.get('response') or \
+                           response_data.get('output')
                 intent = response_data.get('intent', 'UNKNOWN')
+            
+            # Case 2: It's just a String (Raw text)
             elif isinstance(response_data, str):
                 ai_reply = response_data
                 intent = "UNKNOWN"
-            else:
-                ai_reply = None
 
-            # Fallback if AI was totally silent
+            # Case 3: Still None? Force a Dump so we can see it in the Frontend
             if not ai_reply:
-                ai_reply = "I didn't quite understand. Could you rephrase?"
+                ai_reply = f"[DEBUG] AI Format Error. Raw Data: {str(response_data)}"
 
         except Exception as ai_error:
-            print(f"AI Generation Error: {ai_error}")
-            intent = "CHITCHAT"
-            ai_reply = "Sorry, network is bad. Say that again?"
+            print(f"❌ AI CRASH: {ai_error}")
+            # Send the actual crash error to the frontend so you can see it
+            ai_reply = f"[DEBUG] System Error: {str(ai_error)}"
+            intent = "ERROR"
         
+        # Send the final reply (or the Debug Error)
         if intent == "ORDER":
             final_reply = ai_reply + "\n\nPay to Opay: 123456. Reply 'PAID' when done."
             background_tasks.add_task(send_whatsapp_message, user_phone, final_reply)
