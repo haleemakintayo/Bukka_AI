@@ -9,6 +9,7 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [isTyping, setIsTyping] = useState(false); // <--- NEW: Typing State
   const endRef = useRef(null);
 
   const formatTime = (ts) =>
@@ -50,7 +51,7 @@ export default function App() {
     ],
   });
 
-  //  SMART POLLING TO PREVENT DUPLICATES ---
+  // --- SMART POLLING (FIXED DUPLICATES) ---
   useEffect(() => {
     const poll = async () => {
       try {
@@ -58,54 +59,47 @@ export default function App() {
         const data = await res.json();
         
         setMessages((prev) => {
-          // 1. Create a "Signature Set" of messages we already have.
-          // Signature = SenderPhone + MessageBody (e.g. "2347000...:I want rice")
-          const existingSignatures = new Set(
-            prev.map(m => `${m.from}:${m.body?.trim()}`)
-          );
+          // Detect if Bukka AI just replied (to stop typing animation)
+          const lastMsg = data[data.length - 1];
+          if (lastMsg && lastMsg.from === "BukkaAI" && lastMsg.timestamp > (Date.now()/1000 - 10)) {
+             setIsTyping(false);
+          }
 
-          const newMessages = [];
-          
+          const newMessages = [...prev];
+          let hasChanges = false;
+
           data.forEach((serverMsg) => {
             const serverBody = serverMsg.body ?? serverMsg.text?.body ?? "";
-            const signature = `${serverMsg.from}:${serverBody.trim()}`;
             
-            // Check if we have a "local_" version of this message (optimistic update)
-            const localMatch = prev.find(m => 
+            // 1. Try to find a matching "Local" message to UPGRADE it
+            const localIndex = newMessages.findIndex(m => 
                 m.id.startsWith("local_") && 
                 m.body?.trim() === serverBody.trim() &&
                 m.from === serverMsg.from
             );
 
-            if (localMatch) {
-                // FOUND IT! We replace the local one with the server one (to show double ticks)
-                // We add it to newMessages, and we will filter out the old local one below.
+            if (localIndex !== -1) {
+                // UPDATE: Replace local with server version (shows double ticks)
+                newMessages[localIndex] = {
+                    ...serverMsg,
+                    body: serverBody,
+                    timestamp: Number(serverMsg.timestamp)
+                };
+                hasChanges = true;
+            } 
+            // 2. If not found locally, check if we already have this Server ID
+            else if (!newMessages.some(m => m.id === serverMsg.id)) {
+                // NEW Message!
                 newMessages.push({
                     ...serverMsg,
                     body: serverBody,
                     timestamp: Number(serverMsg.timestamp)
                 });
-            } else if (!existingSignatures.has(signature)) {
-                // TOTALLY NEW message (e.g. from AI) -> Add it
-                newMessages.push({
-                    ...serverMsg,
-                    body: serverBody,
-                    timestamp: Number(serverMsg.timestamp)
-                });
+                hasChanges = true;
             }
           });
 
-          // 2. Merge Logic:
-          // Keep old messages EXCEPT the ones we just "upgraded" from local to server
-          const keptOldMessages = prev.filter(m => 
-            !newMessages.some(nm => 
-                nm.body?.trim() === m.body?.trim() && nm.from === m.from
-            )
-          );
-
-          const finalMerged = [...keptOldMessages, ...newMessages];
-          
-          return finalMerged.sort((a, b) => a.timestamp - b.timestamp);
+          return hasChanges ? newMessages.sort((a, b) => a.timestamp - b.timestamp) : prev;
         });
       } catch (e) {
         console.error("Polling error:", e);
@@ -113,7 +107,7 @@ export default function App() {
     };
     
     poll();
-    const i = setInterval(poll, 2000); // Poll every 2 seconds
+    const i = setInterval(poll, 6000); // <--- UPDATED: 6 Seconds Polling
     return () => clearInterval(i);
   }, []);
 
@@ -124,7 +118,10 @@ export default function App() {
     setInput("");
     setIsSending(true);
     
-    // Add Optimistic Message (Local ID)
+    // Trigger Typing Animation immediately
+    setIsTyping(true);
+    
+    // Add Optimistic Message
     setMessages((prev) => [
       ...prev,
       { 
@@ -144,6 +141,7 @@ export default function App() {
       });
     } catch (err) {
         console.error("Send failed", err);
+        setIsTyping(false); // Stop typing if fail
     } finally { 
         setIsSending(false); 
     }
@@ -152,9 +150,10 @@ export default function App() {
   const resetDemo = async () => {
     await fetch(`${API_BASE}/demo/reset`, { method: "POST" });
     setMessages([]);
+    setIsTyping(false);
   };
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, isTyping]);
 
   return (
     <div className="relative min-h-screen flex flex-col items-center px-4 text-gray-200
@@ -216,6 +215,16 @@ export default function App() {
                   </div>
                 );
               })}
+            
+            {/* TYPING INDICATOR */}
+            {isTyping && persona.id === "student" && (
+                <div className="flex justify-start animate-pulse">
+                    <div className="bg-white/10 backdrop-blur-md px-3 py-2 rounded-xl rounded-bl-sm text-xs text-green-400 italic">
+                        Bukka AI is typing...
+                    </div>
+                </div>
+            )}
+            
             <div ref={endRef} />
           </div>
 
@@ -241,11 +250,11 @@ export default function App() {
         <div className="w-full md:w-1/3 p-4 backdrop-blur-xl bg-white/5 border border-white/10 rounded-2xl shadow-lg text-gray-200 text-sm flex flex-col">
           <h2 className="font-bold text-base mb-2">How This Demo Works</h2>
           <p className="leading-relaxed text-xs">
-            - Switch between <span className="font-semibold">Student</span> and <span className="font-semibold">Vendor</span> using the buttons above.<br/>
+            - Switch between <span className="font-semibold">Student</span> and <span className="font-semibold">Vendor</span>.<br/>
             - Type a message and hit <span className="font-semibold">Send</span>.<br/>
-            - Your message appears in green bubbles; Bukka AI responses in gray.<br/>
-            - Ticks show status: single ✓ = sent, double ✓✓ = delivered.<br/>
-            - Click <span className="font-semibold">Reset</span> to clear the chat.
+            - "Paid" alerts trigger DB updates.<br/>
+            - Owner "CONFIRM" approves orders.<br/>
+            - Ticks update automatically.
           </p>
         </div>
 

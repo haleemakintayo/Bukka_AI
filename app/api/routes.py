@@ -37,7 +37,7 @@ async def reset_demo_chats():
     return {"status": "cleared"}
 
 # --- 3. HELPER FUNCTIONS ---
-def get_formatted_history(user_phone: str, limit: int = 10) -> str:
+def get_formatted_history(user_phone: str, limit: int = 40) -> str:
     """
     Grabs the last few messages for this user to give the AI context.
     """
@@ -174,9 +174,26 @@ async def whatsapp_webhook(
             user = User(phone_number=user_phone, name=user_name)
             db.add(user)
             db.commit()
-
-        # Check for Payment Report
+        # 2. Check for Payment Report (FIXED: Ensures DB Order Exists)
         if "PAID" in message_text.upper():
+            # Check if they already have an order
+            existing_order = db.query(Order).filter(
+                Order.user_id == user.id, 
+                Order.status == "Pending"
+            ).first()
+            
+            # If NO order exists (e.g., they just chatted with AI), create one now!
+            if not existing_order:
+                print(f"📝 Creating Missing Order for {user_name}")
+                new_order = Order(
+                    user_id=user.id,
+                    items="Assorted Food (AI Chat)", # Generic placeholder since AI handled details
+                    total_price=0.0,
+                    status="Pending"
+                )
+                db.add(new_order)
+                db.commit()
+
             alert_msg = f"💰 PAYMENT ALERT: {user_name} says they paid.\nReply 'CONFIRM {user_name}' to approve."
             background_tasks.add_task(send_whatsapp_message, OWNER_PHONE, alert_msg)
             background_tasks.add_task(send_whatsapp_message, user_phone, "Okay! Asking Auntie to confirm...")
