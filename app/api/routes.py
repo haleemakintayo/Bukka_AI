@@ -37,7 +37,7 @@ async def reset_demo_chats():
     return {"status": "cleared"}
 
 # --- 3. HELPER FUNCTIONS ---
-def get_formatted_history(user_phone: str, limit: int = 4) -> str:
+def get_formatted_history(user_phone: str, limit: int = 10) -> str:
     """
     Grabs the last few messages for this user to give the AI context.
     """

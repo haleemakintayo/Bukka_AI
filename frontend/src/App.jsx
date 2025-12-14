@@ -21,19 +21,19 @@ export default function App() {
   };
 
   const buildPayload = (text) => ({
-    object: "whatsapp_business_account", // <--- Added
+    object: "whatsapp_business_account",
     entry: [
       {
-        id: "123456789", // <--- Added (Required by EntryObject)
+        id: "123456789",
         changes: [
           {
             field: "messages",
             value: {
-              messaging_product: "whatsapp", // <--- Added (REQUIRED by ValueObject)
+              messaging_product: "whatsapp",
               metadata: {
                 display_phone_number: "1234",
                 phone_number_id: "1234"
-              }, // <--- Added (REQUIRED by ValueObject)
+              },
               messages: [
                 {
                   from: persona.phone,
@@ -50,26 +50,70 @@ export default function App() {
     ],
   });
 
+  //  SMART POLLING TO PREVENT DUPLICATES ---
   useEffect(() => {
     const poll = async () => {
       try {
         const res = await fetch(`${API_BASE}/demo/chats`);
         const data = await res.json();
+        
         setMessages((prev) => {
-          const map = new Map(prev.map((m) => [m.id, m]));
-          data.forEach((m) => {
-            map.set(m.id ?? `${m.from}_${m.timestamp}`, {
-              ...m,
-              body: m.body ?? m.text?.body ?? "",
-              timestamp: Number(m.timestamp),
-            });
+          // 1. Create a "Signature Set" of messages we already have.
+          // Signature = SenderPhone + MessageBody (e.g. "2347000...:I want rice")
+          const existingSignatures = new Set(
+            prev.map(m => `${m.from}:${m.body?.trim()}`)
+          );
+
+          const newMessages = [];
+          
+          data.forEach((serverMsg) => {
+            const serverBody = serverMsg.body ?? serverMsg.text?.body ?? "";
+            const signature = `${serverMsg.from}:${serverBody.trim()}`;
+            
+            // Check if we have a "local_" version of this message (optimistic update)
+            const localMatch = prev.find(m => 
+                m.id.startsWith("local_") && 
+                m.body?.trim() === serverBody.trim() &&
+                m.from === serverMsg.from
+            );
+
+            if (localMatch) {
+                // FOUND IT! We replace the local one with the server one (to show double ticks)
+                // We add it to newMessages, and we will filter out the old local one below.
+                newMessages.push({
+                    ...serverMsg,
+                    body: serverBody,
+                    timestamp: Number(serverMsg.timestamp)
+                });
+            } else if (!existingSignatures.has(signature)) {
+                // TOTALLY NEW message (e.g. from AI) -> Add it
+                newMessages.push({
+                    ...serverMsg,
+                    body: serverBody,
+                    timestamp: Number(serverMsg.timestamp)
+                });
+            }
           });
-          return Array.from(map.values()).sort((a, b) => a.timestamp - b.timestamp);
+
+          // 2. Merge Logic:
+          // Keep old messages EXCEPT the ones we just "upgraded" from local to server
+          const keptOldMessages = prev.filter(m => 
+            !newMessages.some(nm => 
+                nm.body?.trim() === m.body?.trim() && nm.from === m.from
+            )
+          );
+
+          const finalMerged = [...keptOldMessages, ...newMessages];
+          
+          return finalMerged.sort((a, b) => a.timestamp - b.timestamp);
         });
-      } catch {}
+      } catch (e) {
+        console.error("Polling error:", e);
+      }
     };
+    
     poll();
-    const i = setInterval(poll, 2000);
+    const i = setInterval(poll, 2000); // Poll every 2 seconds
     return () => clearInterval(i);
   }, []);
 
@@ -79,13 +123,30 @@ export default function App() {
     const text = input.trim();
     setInput("");
     setIsSending(true);
+    
+    // Add Optimistic Message (Local ID)
     setMessages((prev) => [
       ...prev,
-      { id: `local_${Date.now()}`, from: persona.phone, to: "BukkaAI", body: text, timestamp: Math.floor(Date.now() / 1000) },
+      { 
+        id: `local_${Date.now()}`, 
+        from: persona.phone, 
+        to: "BukkaAI", 
+        body: text, 
+        timestamp: Math.floor(Date.now() / 1000) 
+      },
     ]);
+
     try {
-      await fetch(`${API_BASE}/webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(buildPayload(text)) });
-    } finally { setIsSending(false); }
+      await fetch(`${API_BASE}/webhook`, { 
+        method: "POST", 
+        headers: { "Content-Type": "application/json" }, 
+        body: JSON.stringify(buildPayload(text)) 
+      });
+    } catch (err) {
+        console.error("Send failed", err);
+    } finally { 
+        setIsSending(false); 
+    }
   };
 
   const resetDemo = async () => {
