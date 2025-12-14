@@ -37,6 +37,25 @@ async def reset_demo_chats():
     return {"status": "cleared"}
 
 # --- 3. HELPER FUNCTIONS ---
+def get_formatted_history(user_phone: str, limit: int = 4) -> str:
+    """
+    Grabs the last few messages for this user to give the AI context.
+    """
+    # Filter chat for this specific user
+    user_chats = [
+        c for c in DEMO_CHATS 
+        if c.get("from") == user_phone or c.get("to") == user_phone
+    ]
+    
+    # Take the last 'limit' messages (excluding the one we just received if possible)
+    recent_history = user_chats[-(limit+1):-1] # Slice to get context BEFORE current msg
+    
+    context_str = ""
+    for msg in recent_history:
+        sender = "User" if msg["from"] == user_phone else "AI"
+        context_str += f"{sender}: {msg['body']}\n"
+        
+    return context_str
 
 def send_whatsapp_message(to_number: str, message_text: str):
     """Sends via Meta AND saves for the Demo Frontend."""
@@ -117,6 +136,7 @@ async def whatsapp_webhook(
     try:
         entry = data['entry'][0]['changes'][0]['value']
         
+        # Skip status updates (sent, delivered, read)
         if 'messages' not in entry or not entry['messages']:
             return {"status": "ignored"}
             
@@ -155,55 +175,63 @@ async def whatsapp_webhook(
             db.add(user)
             db.commit()
 
+        # Check for Payment Report
         if "PAID" in message_text.upper():
             alert_msg = f"💰 PAYMENT ALERT: {user_name} says they paid.\nReply 'CONFIRM {user_name}' to approve."
             background_tasks.add_task(send_whatsapp_message, OWNER_PHONE, alert_msg)
             background_tasks.add_task(send_whatsapp_message, user_phone, "Okay! Asking Auntie to confirm...")
             return {"status": "payment_reported"}
 
-        # ... inside whatsapp_webhook function ...
-
-        # 3. AI Order Logic (DEBUG MODE)
+        # --- C. AI ORDER LOGIC ---
         try:
-            print(f"🤖 ASKING AI: {message_text}")
+            # 1. Get History
+            history_context = get_formatted_history(user_phone)
             
+            # 2. Construct "Smart" Input
+            # We tell the AI: "Here is what happened before, and here is what the user just said."
+            full_prompt_input = (
+                f"HISTORY OF CONVERSATION:\n{history_context}\n"
+                f"CURRENT USER MESSAGE: {message_text}"
+            )
+            
+            print(f"🧠 SENDING TO AI WITH CONTEXT: {full_prompt_input}")
+
             response_data = order_chain.invoke({
                 "menu": str(settings.MENU),
-                "user_input": message_text
+                "user_input": full_prompt_input  # <--- WE PASS HISTORY HERE
             })
             
-            # --- DEBUGGING: Print exact output to logs ---
-            print(f"🧠 AI RAW OUTPUT: {response_data}")
+            print(f"🧠 AI RAW OUTPUT: {response_data}") 
             
-            # Smart Parsing Strategy
             ai_reply = None
+            intent = "CHITCHAT" 
             
-            # Case 1: It's a Dictionary (Correct JSON)
             if isinstance(response_data, dict):
-                ai_reply = response_data.get('reply_message') or \
-                           response_data.get('text') or \
-                           response_data.get('response') or \
-                           response_data.get('output')
-                intent = response_data.get('intent', 'UNKNOWN')
-            
-            # Case 2: It's just a String (Raw text)
+                ai_reply = response_data.get('message') or \
+                           response_data.get('reply_message') or \
+                           response_data.get('text')
+                
+                if response_data.get('order') or response_data.get('total'):
+                    intent = "ORDER"
+                else:
+                    intent = response_data.get('intent', 'CHITCHAT')
+
             elif isinstance(response_data, str):
                 ai_reply = response_data
-                intent = "UNKNOWN"
 
-            # Case 3: Still None? Force a Dump so we can see it in the Frontend
             if not ai_reply:
-                ai_reply = f"[DEBUG] AI Format Error. Raw Data: {str(response_data)}"
+                ai_reply = "I didn't quite understand. Could you rephrase?"
 
         except Exception as ai_error:
-            print(f"❌ AI CRASH: {ai_error}")
-            # Send the actual crash error to the frontend so you can see it
-            ai_reply = f"[DEBUG] System Error: {str(ai_error)}"
-            intent = "ERROR"
+            print(f"AI Generation Error: {ai_error}")
+            intent = "CHITCHAT"
+            ai_reply = "Sorry, network is bad. Say that again?"
+
         
-        # Send the final reply (or the Debug Error)
+        # --- SEND REPLY ---
         if intent == "ORDER":
-            final_reply = ai_reply + "\n\nPay to Opay: 123456. Reply 'PAID' when done."
+            # Add payment instructions if it's an order
+            final_reply = f"{ai_reply}\n\nPay to Opay: 123456. Reply 'PAID' when done."
             background_tasks.add_task(send_whatsapp_message, user_phone, final_reply)
         else:
             background_tasks.add_task(send_whatsapp_message, user_phone, ai_reply)
