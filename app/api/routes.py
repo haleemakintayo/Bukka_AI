@@ -182,23 +182,22 @@ async def whatsapp_webhook(
             background_tasks.add_task(send_whatsapp_message, user_phone, "Okay! Asking Auntie to confirm...")
             return {"status": "payment_reported"}
 
-        # --- C. AI ORDER LOGIC ---
+        # --- C. AI ORDER LOGIC (ROBUST VERSION) ---
         try:
             # 1. Get History
             history_context = get_formatted_history(user_phone)
             
-            # 2. Construct "Smart" Input
-            # We tell the AI: "Here is what happened before, and here is what the user just said."
+            # 2. Construct Input
             full_prompt_input = (
                 f"HISTORY OF CONVERSATION:\n{history_context}\n"
                 f"CURRENT USER MESSAGE: {message_text}"
             )
             
-            print(f"🧠 SENDING TO AI WITH CONTEXT: {full_prompt_input}")
+            print(f"🧠 SENDING TO AI: {full_prompt_input}")
 
             response_data = order_chain.invoke({
                 "menu": str(settings.MENU),
-                "user_input": full_prompt_input  # <--- WE PASS HISTORY HERE
+                "user_input": full_prompt_input
             })
             
             print(f"🧠 AI RAW OUTPUT: {response_data}") 
@@ -207,34 +206,49 @@ async def whatsapp_webhook(
             intent = "CHITCHAT" 
             
             if isinstance(response_data, dict):
+                # 1. Try ALL common keys for the message
                 ai_reply = response_data.get('message') or \
                            response_data.get('reply_message') or \
-                           response_data.get('text')
+                           response_data.get('text') or \
+                           response_data.get('response') or \
+                           response_data.get('output') or \
+                           response_data.get('answer')
                 
+                # 2. Safety Net: If still no message, grab the FIRST string value we find
+                if not ai_reply:
+                    for value in response_data.values():
+                        if isinstance(value, str):
+                            ai_reply = value
+                            break
+
+                # 3. Detect Intent
                 if response_data.get('order') or response_data.get('total'):
                     intent = "ORDER"
-                else:
-                    intent = response_data.get('intent', 'CHITCHAT')
+                    # If AI forgot to write a message but created an order, make one up!
+                    if not ai_reply:
+                        ai_reply = "I have taken your order."
 
             elif isinstance(response_data, str):
                 ai_reply = response_data
 
+            # 4. Ultimate Fallback: Dump the raw data so you see it in the chat
             if not ai_reply:
-                ai_reply = "I didn't quite understand. Could you rephrase?"
+                ai_reply = f"[DEBUG] AI returned data but no text found: {response_data}"
 
         except Exception as ai_error:
             print(f"AI Generation Error: {ai_error}")
             intent = "CHITCHAT"
-            ai_reply = "Sorry, network is bad. Say that again?"
-
+            ai_reply = f"[DEBUG] System Error: {str(ai_error)}"
         
         # --- SEND REPLY ---
         if intent == "ORDER":
-            # Add payment instructions if it's an order
             final_reply = f"{ai_reply}\n\nPay to Opay: 123456. Reply 'PAID' when done."
             background_tasks.add_task(send_whatsapp_message, user_phone, final_reply)
         else:
             background_tasks.add_task(send_whatsapp_message, user_phone, ai_reply)
+        # --- C. AI ORDER LOGIC ---
+       
+
 
     except KeyError as e:
         print(f"⚠️ MISSING DATA KEY: {e}") 
