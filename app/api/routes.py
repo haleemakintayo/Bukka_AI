@@ -2,7 +2,7 @@
 import os
 import requests
 import json
-import time  # <--- NEW: Added time import
+import time 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 
@@ -21,7 +21,7 @@ router = APIRouter()
 VERIFY_TOKEN = "blue_chameleon_2025"
 META_TOKEN = os.getenv("META_API_TOKEN") 
 PHONE_ID = os.getenv("WHATSAPP_PHONE_ID") 
-OWNER_PHONE = "2348012345678"  # Ensure this matches your frontend OWNER phone
+OWNER_PHONE = "2348012345678" 
 
 # --- 2. DEMO MEMORY ---
 DEMO_CHATS = []
@@ -37,18 +37,12 @@ async def reset_demo_chats():
     return {"status": "cleared"}
 
 # --- 3. HELPER FUNCTIONS ---
-def get_formatted_history(user_phone: str, limit: int = 40) -> str:
-    """
-    Grabs the last few messages for this user to give the AI context.
-    """
-    # Filter chat for this specific user
+def get_formatted_history(user_phone: str, limit: int = 10) -> str:
     user_chats = [
         c for c in DEMO_CHATS 
         if c.get("from") == user_phone or c.get("to") == user_phone
     ]
-    
-    # Take the last 'limit' messages (excluding the one we just received if possible)
-    recent_history = user_chats[-(limit+1):-1] # Slice to get context BEFORE current msg
+    recent_history = user_chats[-(limit+1):-1]
     
     context_str = ""
     for msg in recent_history:
@@ -58,11 +52,10 @@ def get_formatted_history(user_phone: str, limit: int = 40) -> str:
     return context_str
 
 def send_whatsapp_message(to_number: str, message_text: str):
-    """Sends via Meta AND saves for the Demo Frontend."""
+    """Sends via Meta AND saves for the Demo Frontend (SYNCHRONOUS)."""
     print(f"📤 SENDING REPLY TO {to_number}: {message_text}")
     
     # 1. Save to Memory with REAL TIMESTAMP
-    # FIX: Use time.time() so it sorts correctly in the frontend
     current_timestamp = int(time.time()) 
     
     DEMO_CHATS.append({
@@ -71,10 +64,10 @@ def send_whatsapp_message(to_number: str, message_text: str):
         "from": "BukkaAI",
         "to": to_number,
         "body": message_text,
-        "timestamp": current_timestamp # <--- FIXED TIMESTAMP
+        "timestamp": current_timestamp
     })
     
-    # 2. Try sending via Real Meta API
+    # 2. Try sending via Real Meta API (Fire and forget, but wait for error)
     try:
         url = f"https://graph.facebook.com/v18.0/{PHONE_ID}/messages"
         headers = {
@@ -87,7 +80,8 @@ def send_whatsapp_message(to_number: str, message_text: str):
             "type": "text",
             "text": {"body": message_text}
         }
-        requests.post(url, json=payload, headers=headers)
+        # Timeout ensures we don't hang if Meta is slow
+        requests.post(url, json=payload, headers=headers, timeout=1.0)
     except Exception as e:
         print(f"Meta Send Failed (Expected in Demo): {e}")
 
@@ -135,8 +129,6 @@ async def whatsapp_webhook(
     
     try:
         entry = data['entry'][0]['changes'][0]['value']
-        
-        # Skip status updates (sent, delivered, read)
         if 'messages' not in entry or not entry['messages']:
             return {"status": "ignored"}
             
@@ -146,9 +138,8 @@ async def whatsapp_webhook(
         
         print(f"📥 RECEIVED MESSAGE from {user_phone}: {message_text}")
 
-        # FIX: Ensure incoming messages also have valid timestamps
+        # Store Incoming
         incoming_timestamp = int(message.get('timestamp', time.time()))
-
         DEMO_CHATS.append({
              "id": message.get('id', f'temp_{time.time()}'),
              "direction": "inbound",
@@ -161,7 +152,7 @@ async def whatsapp_webhook(
         # --- A. OWNER LOGIC ---
         if user_phone == OWNER_PHONE and "CONFIRM" in message_text.upper():
             reply = handle_owner_confirmation(db, message_text)
-            background_tasks.add_task(send_whatsapp_message, OWNER_PHONE, reply)
+            send_whatsapp_message(OWNER_PHONE, reply) # Sync
             return {"status": "owner_action_processed"}
 
         # --- B. STUDENT LOGIC ---
@@ -174,37 +165,41 @@ async def whatsapp_webhook(
             user = User(phone_number=user_phone, name=user_name)
             db.add(user)
             db.commit()
-        # 2. Check for Payment Report (FIXED: Ensures DB Order Exists)
-        if "PAID" in message_text.upper():
-            # Check if they already have an order
-            existing_order = db.query(Order).filter(
-                Order.user_id == user.id, 
-                Order.status == "Pending"
-            ).first()
-            
-            # If NO order exists (e.g., they just chatted with AI), create one now!
-            if not existing_order:
-                print(f"📝 Creating Missing Order for {user_name}")
-                new_order = Order(
-                    user_id=user.id,
-                    items="Assorted Food (AI Chat)", # Generic placeholder since AI handled details
-                    total_price=0.0,
-                    status="Pending"
-                )
-                db.add(new_order)
-                db.commit()
 
-            alert_msg = f"💰 PAYMENT ALERT: {user_name} says they paid.\nReply 'CONFIRM {user_name}' to approve."
-            background_tasks.add_task(send_whatsapp_message, OWNER_PHONE, alert_msg)
-            background_tasks.add_task(send_whatsapp_message, user_phone, "Okay! Asking Auntie to confirm...")
-            return {"status": "payment_reported"}
+        # --- C. PAYMENT REPORT LOGIC (Debugged) ---
+        if "PAID" in message_text.upper() or "IVE PAID" in message_text.upper():
+            print(f"💰 Processing PAID trigger for {user_name}...")
+            try:
+                existing_order = db.query(Order).filter(
+                    Order.user_id == user.id, 
+                    Order.status == "Pending"
+                ).first()
+                
+                if not existing_order:
+                    print(f"📝 Creating Missing Order for {user_name}")
+                    new_order = Order(
+                        user_id=user.id,
+                        items="Assorted Food (AI Chat)", 
+                        total_price=0.0,
+                        status="Pending"
+                    )
+                    db.add(new_order)
+                    db.commit()
+                
+                # Notify Immediately (SYNC)
+                send_whatsapp_message(OWNER_PHONE, f"💰 PAYMENT ALERT: {user_name} says they paid.\nReply 'CONFIRM {user_name}' to approve.")
+                send_whatsapp_message(user_phone, "Okay! Asking Auntie to confirm...")
+                
+                return {"status": "payment_reported"}
+            except Exception as e:
+                print(f"❌ PAID LOGIC ERROR: {e}")
+                send_whatsapp_message(user_phone, "Error processing payment. Please wait.")
+                return {"status": "error"}
 
-        # --- C. AI ORDER LOGIC (ROBUST VERSION) ---
+        # --- D. AI ORDER LOGIC ---
         try:
-            # 1. Get History
             history_context = get_formatted_history(user_phone)
             
-            # 2. Construct Input
             full_prompt_input = (
                 f"HISTORY OF CONVERSATION:\n{history_context}\n"
                 f"CURRENT USER MESSAGE: {message_text}"
@@ -223,49 +218,40 @@ async def whatsapp_webhook(
             intent = "CHITCHAT" 
             
             if isinstance(response_data, dict):
-                # 1. Try ALL common keys for the message
+                # 1. Extract Message
                 ai_reply = response_data.get('message') or \
                            response_data.get('reply_message') or \
-                           response_data.get('text') or \
-                           response_data.get('response') or \
-                           response_data.get('output') or \
-                           response_data.get('answer')
+                           response_data.get('text')
                 
-                # 2. Safety Net: If still no message, grab the FIRST string value we find
                 if not ai_reply:
                     for value in response_data.values():
                         if isinstance(value, str):
                             ai_reply = value
                             break
 
-                # 3. Detect Intent
-                if response_data.get('order') or response_data.get('total'):
+                # 2. Check Status for Payment Prompt
+                if response_data.get('status') == 'complete':
                     intent = "ORDER"
-                    # If AI forgot to write a message but created an order, make one up!
-                    if not ai_reply:
-                        ai_reply = "I have taken your order."
+                else:
+                    intent = "CHITCHAT"
 
             elif isinstance(response_data, str):
                 ai_reply = response_data
 
-            # 4. Ultimate Fallback: Dump the raw data so you see it in the chat
             if not ai_reply:
-                ai_reply = f"[DEBUG] AI returned data but no text found: {response_data}"
+                ai_reply = "I didn't quite understand. Could you rephrase?"
 
         except Exception as ai_error:
             print(f"AI Generation Error: {ai_error}")
             intent = "CHITCHAT"
-            ai_reply = f"[DEBUG] System Error: {str(ai_error)}"
+            ai_reply = "Sorry, network is bad. Say that again?"
         
-        # --- SEND REPLY ---
+        # --- SEND REPLY (SYNC) ---
         if intent == "ORDER":
             final_reply = f"{ai_reply}\n\nPay to Opay: 123456. Reply 'PAID' when done."
-            background_tasks.add_task(send_whatsapp_message, user_phone, final_reply)
+            send_whatsapp_message(user_phone, final_reply)
         else:
-            background_tasks.add_task(send_whatsapp_message, user_phone, ai_reply)
-        # --- C. AI ORDER LOGIC ---
-       
-
+            send_whatsapp_message(user_phone, ai_reply)
 
     except KeyError as e:
         print(f"⚠️ MISSING DATA KEY: {e}") 

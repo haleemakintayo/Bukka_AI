@@ -9,7 +9,7 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
-  const [isTyping, setIsTyping] = useState(false); // <--- NEW: Typing State
+  const [isTyping, setIsTyping] = useState(false);
   const endRef = useRef(null);
 
   const formatTime = (ts) =>
@@ -51,55 +51,48 @@ export default function App() {
     ],
   });
 
-  // --- SMART POLLING (FIXED DUPLICATES) ---
+  // --- ROBUST POLLING STRATEGY ---
   useEffect(() => {
     const poll = async () => {
       try {
         const res = await fetch(`${API_BASE}/demo/chats`);
-        const data = await res.json();
+        const serverData = await res.json();
         
-        setMessages((prev) => {
-          // Detect if Bukka AI just replied (to stop typing animation)
-          const lastMsg = data[data.length - 1];
-          if (lastMsg && lastMsg.from === "BukkaAI" && lastMsg.timestamp > (Date.now()/1000 - 10)) {
+        setMessages((currentMessages) => {
+          // 1. Standardize Server Data
+          const formattedServerMessages = serverData.map(m => ({
+            ...m,
+            body: m.body ?? m.text?.body ?? "",
+            timestamp: Number(m.timestamp)
+          }));
+
+          // 2. Stop Typing Animation if AI has replied recently
+          const lastMsg = formattedServerMessages[formattedServerMessages.length - 1];
+          if (lastMsg && lastMsg.from === "BukkaAI" && lastMsg.timestamp > (Date.now()/1000 - 5)) {
              setIsTyping(false);
           }
 
-          const newMessages = [...prev];
-          let hasChanges = false;
+          // 3. IDENTIFY PENDING LOCAL MESSAGES
+          // We keep a local message ONLY if the server doesn't have it yet.
+          const pendingLocals = currentMessages.filter(localMsg => {
+             // Only care about "optimistic" messages we sent
+             if (!localMsg.id.startsWith("local_")) return false;
 
-          data.forEach((serverMsg) => {
-            const serverBody = serverMsg.body ?? serverMsg.text?.body ?? "";
-            
-            // 1. Try to find a matching "Local" message to UPGRADE it
-            const localIndex = newMessages.findIndex(m => 
-                m.id.startsWith("local_") && 
-                m.body?.trim() === serverBody.trim() &&
-                m.from === serverMsg.from
-            );
-
-            if (localIndex !== -1) {
-                // UPDATE: Replace local with server version (shows double ticks)
-                newMessages[localIndex] = {
-                    ...serverMsg,
-                    body: serverBody,
-                    timestamp: Number(serverMsg.timestamp)
-                };
-                hasChanges = true;
-            } 
-            // 2. If not found locally, check if we already have this Server ID
-            else if (!newMessages.some(m => m.id === serverMsg.id)) {
-                // NEW Message!
-                newMessages.push({
-                    ...serverMsg,
-                    body: serverBody,
-                    timestamp: Number(serverMsg.timestamp)
-                });
-                hasChanges = true;
-            }
+             // Check if this message is now on the server (by text & sender)
+             const isConfirmed = formattedServerMessages.some(serverMsg => 
+                 serverMsg.body.trim() === localMsg.body.trim() && 
+                 serverMsg.from === localMsg.from
+             );
+             
+             // Keep it only if NOT confirmed yet
+             return !isConfirmed;
           });
 
-          return hasChanges ? newMessages.sort((a, b) => a.timestamp - b.timestamp) : prev;
+          // 4. COMBINE & SORT
+          // Server Truth + Pending Locals
+          const merged = [...formattedServerMessages, ...pendingLocals];
+          
+          return merged.sort((a, b) => a.timestamp - b.timestamp);
         });
       } catch (e) {
         console.error("Polling error:", e);
@@ -107,7 +100,7 @@ export default function App() {
     };
     
     poll();
-    const i = setInterval(poll, 6000); // <--- UPDATED: 6 Seconds Polling
+    const i = setInterval(poll, 3000); // <--- FASTER POLLING (3s)
     return () => clearInterval(i);
   }, []);
 
@@ -117,11 +110,9 @@ export default function App() {
     const text = input.trim();
     setInput("");
     setIsSending(true);
+    setIsTyping(true); // Start typing animation
     
-    // Trigger Typing Animation immediately
-    setIsTyping(true);
-    
-    // Add Optimistic Message
+    // Optimistic Update
     setMessages((prev) => [
       ...prev,
       { 
@@ -141,7 +132,7 @@ export default function App() {
       });
     } catch (err) {
         console.error("Send failed", err);
-        setIsTyping(false); // Stop typing if fail
+        setIsTyping(false);
     } finally { 
         setIsSending(false); 
     }
