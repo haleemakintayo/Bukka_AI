@@ -5,6 +5,7 @@ import json
 import time 
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError # <--- Senior Eng: Handle DB Errors explicitly
 
 # Database Imports
 from app.core.database import get_db
@@ -23,7 +24,7 @@ META_TOKEN = os.getenv("META_API_TOKEN")
 PHONE_ID = os.getenv("WHATSAPP_PHONE_ID") 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# REPLACE THIS WITH YOUR REAL WHATSAPP NUMBER
+# YOUR REAL NUMBER
 OWNER_PHONE = "2349068778689" 
 
 # --- MEMORY ---
@@ -41,11 +42,9 @@ async def reset_demo_chats():
 
 # --- HELPER FUNCTIONS ---
 def get_current_time_ms():
-    """Returns timestamp in Milliseconds to fix sorting issues."""
     return int(time.time() * 1000)
 
 def get_formatted_history(user_identifier: str, limit: int = 10) -> str:
-    # Handles both Phone Numbers and Chat IDs
     user_chats = [c for c in DEMO_CHATS if str(c.get("from")) == str(user_identifier) or str(c.get("to")) == str(user_identifier)]
     recent_history = user_chats[-(limit+1):-1]
     
@@ -55,14 +54,14 @@ def get_formatted_history(user_identifier: str, limit: int = 10) -> str:
         context_str += f"{sender}: {msg['body']}\n"
     return context_str
 
-# --- UNIFIED SENDING ENGINE (WhatsApp + Telegram) ---
+# --- UNIFIED SENDING ENGINE ---
 def send_reply(platform: str, to_id: str, message_text: str):
     """
     Sends message to the correct platform AND saves to Demo Frontend.
     """
     print(f"📤 SENDING ({platform}) TO {to_id}: {message_text}")
     
-    # 1. SAVE TO MEMORY (Milliseconds)
+    # Save to Demo UI
     DEMO_CHATS.append({
         "id": f"msg_{len(DEMO_CHATS)+1}",
         "direction": "outbound",
@@ -73,18 +72,19 @@ def send_reply(platform: str, to_id: str, message_text: str):
         "platform": platform
     })
     
-    # 2. SEND VIA API
     try:
         if platform == "whatsapp":
+            if not META_TOKEN: raise ValueError("Meta Token Missing")
             url = f"https://graph.facebook.com/v18.0/{PHONE_ID}/messages"
             headers = {"Authorization": f"Bearer {META_TOKEN}", "Content-Type": "application/json"}
             payload = {"messaging_product": "whatsapp", "to": to_id, "type": "text", "text": {"body": message_text}}
-            requests.post(url, json=payload, headers=headers, timeout=2.0)
+            requests.post(url, json=payload, headers=headers, timeout=3.0)
             
         elif platform == "telegram":
+            if not TELEGRAM_TOKEN: raise ValueError("Telegram Token Missing")
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
             payload = {"chat_id": to_id, "text": message_text}
-            requests.post(url, json=payload, timeout=2.0)
+            requests.post(url, json=payload, timeout=3.0)
             
     except Exception as e:
         print(f"⚠️ {platform} Send Failed: {e}")
@@ -105,38 +105,38 @@ def process_message(platform: str, user_id: str, user_name: str, message_text: s
          "platform": platform
     })
     
-    # 2. User Management (Safe Create)
-    user = db.query(User).filter(User.phone_number == str(user_id)).first()
-    if not user:
-        user = User(phone_number=str(user_id), name=user_name)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-    # 3. Payment Flow (The "Verification" Logic)
-    
-    # TRIGGER A: User says "PAID" -> Ask for Name
-    if "PAID" in message_text.upper() and len(message_text) < 20:
-        send_reply(platform, user_id, "Okay! Abeg, wetin be the NAME on the account you use send money?")
-        return
-
-    # TRIGGER B: User sends Name -> Alert Owner
-    pending_order = db.query(Order).filter(Order.user_id == user.id, Order.status == "Pending").first()
-    
-    # If pending order exists AND message is short AND NOT "CONFIRM" -> Assume it's the Name
-    if pending_order and len(message_text.split()) < 5 and "CONFIRM" not in message_text.upper():
-         payment_name = message_text
-         
-         # Notify Owner (Always on WhatsApp)
-         alert = f"💰 {platform.upper()} ALERT!\nUser: {user_name}\nAcct Name: {payment_name}\nReply 'CONFIRM {user_name}' to approve."
-         send_reply("whatsapp", OWNER_PHONE, alert)
-         
-         # Notify Student
-         send_reply(platform, user_id, "Seen! I don tell Auntie. Make you wait small for confirmation.")
-         return
-
-    # 4. AI Logic
     try:
+        # 2. User Management (Safe Create)
+        user = db.query(User).filter(User.phone_number == str(user_id)).first()
+        if not user:
+            user = User(phone_number=str(user_id), name=user_name)
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+        # 3. Payment Flow (The "Verification" Logic)
+        
+        # TRIGGER A: User says "PAID" -> Ask for Name
+        if "PAID" in message_text.upper() and len(message_text) < 20:
+            send_reply(platform, user_id, "Okay! Abeg, wetin be the NAME on the account you use send money?")
+            return
+
+        # TRIGGER B: User sends Name -> Alert Owner
+        pending_order = db.query(Order).filter(Order.user_id == user.id, Order.status == "Pending").first()
+        
+        # Heuristic: If pending order exists AND message is short AND NOT "CONFIRM"
+        if pending_order and len(message_text.split()) < 5 and "CONFIRM" not in message_text.upper():
+             payment_name = message_text
+             
+             # Notify Owner (Always on WhatsApp)
+             alert = f"💰 {platform.upper()} ALERT!\nUser: {user_name}\nAcct Name: {payment_name}\nReply 'CONFIRM {user_name}'"
+             send_reply("whatsapp", OWNER_PHONE, alert)
+             
+             # Notify Student
+             send_reply(platform, user_id, "Seen! I don tell Auntie. Make you wait small for confirmation.")
+             return
+
+        # 4. AI Logic
         history = get_formatted_history(user_id)
         full_prompt = f"HISTORY:\n{history}\nCURRENT MSG: {message_text}"
         
@@ -172,6 +172,10 @@ def process_message(platform: str, user_id: str, user_name: str, message_text: s
         else:
             send_reply(platform, user_id, ai_reply)
 
+    except SQLAlchemyError as db_err:
+        db.rollback() # <--- Senior Eng Fix: Prevent DB locking
+        print(f"❌ DB ERROR: {db_err}")
+        send_reply(platform, user_id, "System error. Please try again.")
     except Exception as e:
         print(f"❌ LOGIC ERROR: {e}")
         send_reply(platform, user_id, "Sorry, network don do anyhow. Try again.")
@@ -209,7 +213,7 @@ async def whatsapp_webhook(payload: WhatsAppWebhookSchema, db: Session = Depends
         user_phone = message['from']
         message_text = message['text']['body']
         
-        # OWNER COMMAND OVERRIDE
+        # --- OWNER COMMAND LOGIC (FIXED FOR TELEGRAM STUDENTS) ---
         if user_phone == OWNER_PHONE and "CONFIRM" in message_text.upper():
             parts = message_text.split()
             if len(parts) >= 2:
@@ -221,14 +225,14 @@ async def whatsapp_webhook(payload: WhatsAppWebhookSchema, db: Session = Depends
                         order.status = "PAID"
                         db.commit()
                         send_reply("whatsapp", OWNER_PHONE, f"Approved {student_name}'s order.")
-                        # Alert the user on their platform (detect via phone number format)
-                        platform = "whatsapp" # Default
-                        # If user ID is short (Telegram) vs Long (WhatsApp), we could guess, but send_reply handles logic
-                        # Actually, we need to know the platform. For now, assume WhatsApp if phone number matches.
-                        # For Telegram users, we might need to store platform in User DB. 
-                        # HACK: Try sending to WhatsApp first.
-                        send_reply("whatsapp", target_user.phone_number, "✅ Payment Confirmed! Your food is being packed.")
-                        # If it was telegram, the whatsapp send fails, we can add retry logic later.
+                        
+                        # SMART PLATFORM DETECTION (Heuristic)
+                        # WhatsApp numbers are usually 11-13 digits. Telegram IDs are 9-10 digits.
+                        target_platform = "whatsapp"
+                        if len(target_user.phone_number) <= 10:
+                            target_platform = "telegram"
+                            
+                        send_reply(target_platform, target_user.phone_number, "✅ Payment Confirmed! Your food is being packed.")
                     else:
                         send_reply("whatsapp", OWNER_PHONE, "No pending order found.")
                 else:
