@@ -39,7 +39,7 @@ export default function App() {
                 {
                   from: persona.phone,
                   id: `msg_${Date.now()}`,
-                  timestamp: Math.floor(Date.now() / 1000).toString(),
+                  timestamp: Date.now().toString(),
                   text: { body: text },
                   type: "text",
                 },
