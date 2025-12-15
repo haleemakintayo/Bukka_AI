@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from app.core.database import Base
 from app.core.config import settings  # To get the real DB URL
-from app.models.sql_models import User, Order  # Import ALL your models here!
+from app.models.sql_models import User, Order, Message # Import ALL your models here!
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
