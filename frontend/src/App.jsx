@@ -16,6 +16,9 @@ export default function App() {
     new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   const getTickStatus = (msg) => {
+
+
+    
     if (msg.from !== persona.phone) return null;
     if (msg.id?.startsWith("local_")) return "sent";
     return "delivered";
