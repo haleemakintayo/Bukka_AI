@@ -23,7 +23,7 @@ VERIFY_TOKEN = "blue_chameleon_2025"
 META_TOKEN = os.getenv("META_API_TOKEN") 
 PHONE_ID = os.getenv("WHATSAPP_PHONE_ID") 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OWNER_PHONE = "2347048557944" 
+OWNER_PHONE = "2349068778689" 
 
 # --- HELPER: TIME ---
 def get_current_time_ms():
