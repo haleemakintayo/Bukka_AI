@@ -12,7 +12,7 @@ from app.services.ai_tools import consultant_tools
 llm = ChatGroq(
     temperature=0.5, 
     groq_api_key=settings.GROQ_API_KEY, 
-    model_name="meta-llama/llama-4-scout-17b-16e-instruct"
+    model_name="meta-llama/llama-4-maverick-17b-128e-instruct"
 )
 
 # --- PART A: THE ORDER BOT (Standard Chain) ---
