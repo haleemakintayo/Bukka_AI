@@ -10,7 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 # Database Imports
 from app.core.database import get_db
 from app.models.sql_models import User, Order, Message
-from app.models.schemas import WhatsAppMessage, ConsultantResponse, WhatsAppWebhookSchema
+from app.models.schemas import WhatsAppWebhookSchema
 
 # AI Imports
 from app.services.llm_engine import order_chain
@@ -24,12 +24,8 @@ META_TOKEN = os.getenv("META_API_TOKEN")
 PHONE_ID = os.getenv("WHATSAPP_PHONE_ID") 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# --- OWNER SETTINGS ---
-# Set this to "telegram" or "whatsapp"
+# OWNER SETTINGS
 OWNER_PLATFORM = "telegram" 
-
-# Put your Telegram Chat ID here (since you are testing on Telegram)
-# To get your ID, chat with @userinfobot on Telegram
 OWNER_ID = "7490888563" 
 
 # --- HELPER: TIME ---
@@ -97,44 +93,34 @@ def get_db_history(user_id: str, db: Session, limit: int = 10) -> str:
         .order_by(Message.timestamp.desc())\
         .limit(limit)\
         .all()
-    
     context_str = ""
     for m in reversed(history_msgs):
         sender = "User" if m.direction == "inbound" else "AI"
         context_str += f"{sender}: {m.body}\n"
     return context_str
 
-# --- HELPER: OWNER CONFIRMATION LOGIC ---
+# --- HELPER: OWNER CONFIRMATION ---
 def process_owner_command(message_text: str, db: Session):
-    """
-    Handles 'CONFIRM <Student>' command from ANY platform.
-    """
     parts = message_text.split()
-    if len(parts) < 2:
-        return "Format error. Use: CONFIRM <Name>"
+    if len(parts) < 2: return "Format error. Use: CONFIRM <Name>"
         
     student_name = parts[1]
-    # Find the user
     target_user = db.query(User).filter(User.name.ilike(f"%{student_name}%")).first()
     
     if target_user:
-        # Find their pending order
         order = db.query(Order).filter(Order.user_id == target_user.id, Order.status == "Pending").first()
         if order:
             order.status = "PAID"
             db.commit()
             
-            # Find which platform the student is on
+            # Notify Student
             last_msg = db.query(Message).filter(Message.contact_id == target_user.phone_number).order_by(Message.id.desc()).first()
             student_platform = last_msg.platform if last_msg else "whatsapp"
             
-            # Notify Student
-            send_reply(student_platform, target_user.phone_number, "✅ Payment Confirmed! Your food is being packed.", db)
-            return f"Approved {student_name}'s order."
-        else:
-            return "No pending order found for that student."
-    else:
-        return "Student not found."
+            send_reply(student_platform, target_user.phone_number, f"✅ Order #{order.id} Confirmed! Enjoy your meal.", db)
+            return f"Approved {student_name} (Order #{order.id})."
+        return "No pending order found."
+    return "Student not found."
 
 # --- MAIN LOGIC ---
 def process_message(platform: str, user_id: str, user_name: str, message_text: str, db: Session):
@@ -150,14 +136,13 @@ def process_message(platform: str, user_id: str, user_name: str, message_text: s
     db.add(in_msg)
     db.commit()
     
-    # 2. User/Owner Check
-    # If the sender IS the owner, check for commands
+    # 2. Owner Command Check
     if str(user_id) == str(OWNER_ID) and "CONFIRM" in message_text.upper():
         reply = process_owner_command(message_text, db)
         send_reply(platform, user_id, reply, db)
         return
 
-    # 3. Create/Fetch Student User
+    # 3. User Management
     user = db.query(User).filter(User.phone_number == str(user_id)).first()
     if not user:
         user = User(phone_number=str(user_id), name=user_name)
@@ -166,19 +151,31 @@ def process_message(platform: str, user_id: str, user_name: str, message_text: s
         db.refresh(user)
 
     # 4. Payment Verification Flow
+    
+    # TRIGGER A: User says "PAID"
     if "PAID" in message_text.upper() and len(message_text) < 20:
-        send_reply(platform, user_id, "Okay! Abeg, wetin be the NAME on the account?", db)
+        send_reply(platform, user_id, "Okay! Please type the NAME on your bank account for verification.", db)
         return
 
+    # TRIGGER B: Name provided -> Alert Owner
     pending_order = db.query(Order).filter(Order.user_id == user.id, Order.status == "Pending").first()
     
     if pending_order and len(message_text.split()) < 5 and "CONFIRM" not in message_text.upper():
-         # Alert Owner (Dynamic Platform)
-         alert = f"💰 ALERT!\nUser: {user_name}\nAcct: {message_text}\nReply 'CONFIRM {user_name}'"
-         send_reply(OWNER_PLATFORM, OWNER_ID, alert, db)
+         # 💰 THE UPGRADE: Include Items and Order ID in Alert!
+         order_details = pending_order.items or "Unknown items"
+         order_id = pending_order.id
+         total = pending_order.total_price or "0"
          
-         # Notify Student
-         send_reply(platform, user_id, "Seen! I don tell Auntie.", db)
+         alert = (
+             f"💰 <b>NEW PAYMENT!</b>\n"
+             f"User: {user_name}\n"
+             f"Acct Name: {message_text}\n"
+             f"Order #{order_id}: {order_details}\n"
+             f"Total: N{total}\n\n"
+             f"Reply 'CONFIRM {user_name}' to approve."
+         )
+         send_reply(OWNER_PLATFORM, OWNER_ID, alert, db)
+         send_reply(platform, user_id, "Seen! I have notified the vendor. Please wait for confirmation.", db)
          return
 
     # 5. AI Logic
@@ -190,12 +187,21 @@ def process_message(platform: str, user_id: str, user_name: str, message_text: s
         
         ai_reply = None
         intent = "CHITCHAT" 
+        order_items_summary = "Assorted" # Default
+        order_total = 0.0
         
         if isinstance(response_data, dict):
             ai_reply = response_data.get('message') or response_data.get('text')
+            # Extract items summary for the DB
+            if response_data.get('order'):
+                order_items_summary = response_data.get('order')
+            if response_data.get('total'):
+                order_total = float(response_data.get('total'))
+                
             if not ai_reply:
                 for v in response_data.values():
                     if isinstance(v, str): ai_reply = v; break
+            
             if response_data.get('status') == 'complete':
                 intent = "ORDER"
         elif isinstance(response_data, str):
@@ -204,19 +210,27 @@ def process_message(platform: str, user_id: str, user_name: str, message_text: s
         if not ai_reply: ai_reply = "I didn't quite understand."
         
         if intent == "ORDER":
+            # 📝 THE UPGRADE: Save the specific items to the DB
             if not pending_order:
-                new_order = Order(user_id=user.id, items="Assorted (AI)", total_price=0.0, status="Pending")
+                print(f"📝 Creating Order: {order_items_summary}")
+                new_order = Order(
+                    user_id=user.id, 
+                    items=order_items_summary, # <--- Saving the real items!
+                    total_price=order_total, 
+                    status="Pending"
+                )
                 db.add(new_order)
                 db.commit()
+                db.refresh(new_order) # Get ID
             
-            final_reply = f"{ai_reply}\n\nPay to Opay: 123456.\nReply 'PAID' when done."
+            final_reply = f"{ai_reply}\n\nOrder #{new_order.id} Created.\nPay to Opay: 123456.\nReply 'PAID' when done."
             send_reply(platform, user_id, final_reply, db)
         else:
             send_reply(platform, user_id, ai_reply, db)
 
     except Exception as e:
         print(f"❌ ERROR: {e}")
-        send_reply(platform, user_id, "Sorry, network don do anyhow.", db)
+        send_reply(platform, user_id, "System error. Please try again.", db)
 
 
 # --- WEBHOOKS ---
@@ -241,19 +255,12 @@ async def whatsapp_webhook(payload: WhatsAppWebhookSchema, db: Session = Depends
     try:
         entry = data['entry'][0]['changes'][0]['value']
         if 'messages' not in entry or not entry['messages']: return {"status": "ignored"}
-            
-        message = entry['messages'][0]
-        user_phone = message['from']
-        message_text = message['text']['body']
-        
+        msg = entry['messages'][0]
         user_name = "Student"
         if entry.get('contacts'): user_name = entry['contacts'][0]['profile']['name']
-        
-        process_message("whatsapp", user_phone, user_name, message_text, db)
-        
+        process_message("whatsapp", msg['from'], user_name, msg['text']['body'], db)
     except Exception as e:
         print(f"WhatsApp Error: {e}")
-        
     return {"status": "received"}
 
 @router.get("/webhook")
