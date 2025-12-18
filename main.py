@@ -1,9 +1,10 @@
 # main.py
 import uvicorn
 from fastapi import FastAPI
-from app.api.routes import router as api_router
+from app.api.old_routes import router as api_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
+from app.api.endpoints import telegram, whatsapp, demo
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -18,13 +19,15 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-# Include the routes from the API folder
-app.include_router(api_router)
+# Include the separated routers
+app.include_router(telegram.router, prefix="/telegram", tags=["Telegram"])
+app.include_router(whatsapp.router, tags=["WhatsApp"]) 
+app.include_router(demo.router, prefix="/demo", tags=["Demo"])
 
 
 @app.get("/")
-def health_check():
-    return {"status": "online", "system": "Bukka AI"}
+def read_root():
+    return {"status": "Bukka AI System Online 🚀"}
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
