@@ -11,7 +11,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Hardcoded for now per request; replace manually before production.
-TELEGRAM_WEBHOOK_SECRET = "replace_this_with_telegram_webhook_secret"
+TELEGRAM_WEBHOOK_SECRET = "i5N7Oq8Pz74pUPPD_9h4-E9oh0jUbN5UUOUQlSRNDNM"
 
 
 def parse_source_timestamp_ms(raw_timestamp: int | None) -> int | None:
