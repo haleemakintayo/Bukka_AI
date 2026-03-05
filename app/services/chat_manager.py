@@ -2,6 +2,7 @@ import os
 import logging
 import requests
 import time
+import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from sqlalchemy.orm import Session
 
@@ -14,15 +15,54 @@ PHONE_ID = os.getenv("WHATSAPP_PHONE_ID")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # OWNER SETTINGS
-OWNER_PLATFORM = "telegram"
-OWNER_ID = os.getenv("OWNER_ID", "6094231697")
-OWNER_PHONE_WHATSAPP = os.getenv("OWNER_PHONE", "2347048557944")
+OWNER_PLATFORM = (os.getenv("OWNER_PLATFORM") or "telegram").strip().lower()
+OWNER_ID = os.getenv("OWNER_ID")
+OWNER_PHONE_WHATSAPP = os.getenv("OWNER_PHONE")
 
 logger = logging.getLogger(__name__)
+
+OWNER_HELP_TEXT = (
+    "Vendor commands:\n"
+    "/menu\n"
+    "/add <item name> | <price>\n"
+    "/out <item name>\n"
+    "/in <item name>\n"
+    "/confirm <order_id>\n"
+    "/help\n\n"
+    "Examples:\n"
+    "/add Jollof Rice | 500\n"
+    "/out Chicken\n"
+    "/confirm 105"
+)
 
 
 def get_current_time_ms():
     return int(time.time() * 1000)
+
+
+def owner_destination() -> tuple[str, str] | None:
+    if OWNER_PLATFORM == "telegram":
+        if OWNER_ID:
+            return ("telegram", str(OWNER_ID))
+        return None
+    if OWNER_PLATFORM == "whatsapp":
+        if OWNER_PHONE_WHATSAPP:
+            return ("whatsapp", str(OWNER_PHONE_WHATSAPP))
+        return None
+
+    if OWNER_ID:
+        return ("telegram", str(OWNER_ID))
+    if OWNER_PHONE_WHATSAPP:
+        return ("whatsapp", str(OWNER_PHONE_WHATSAPP))
+    return None
+
+
+def is_owner_sender(platform: str, user_id: str) -> bool:
+    if platform == "telegram":
+        return bool(OWNER_ID) and str(user_id) == str(OWNER_ID)
+    if platform == "whatsapp":
+        return bool(OWNER_PHONE_WHATSAPP) and str(user_id) == str(OWNER_PHONE_WHATSAPP)
+    return False
 
 
 def get_live_menu_items(db: Session):
@@ -144,18 +184,95 @@ def send_reply(platform: str, to_id: str, message_text: str, db: Session):
         logger.exception("outbound message delivery failed platform=%s to=%s", platform, to_id)
 
 
-def process_owner_command(message_text: str, db: Session):
-    parts = message_text.split()
-    if not parts:
-        return "Unknown command. Try: CONFIRM, ADD, OUT, IN, MENU"
-    cmd = parts[0].upper()
+def parse_owner_command(message_text: str) -> dict | None:
+    raw = (message_text or "").strip()
+    if not raw:
+        return None
+
+    # Preferred format: slash commands.
+    if raw.startswith("/"):
+        parts = raw.split(maxsplit=1)
+        cmd = parts[0].lower()
+        arg_text = parts[1].strip() if len(parts) > 1 else ""
+
+        if cmd == "/help":
+            return {"cmd": "HELP"}
+        if cmd == "/menu":
+            return {"cmd": "MENU"}
+        if cmd == "/out":
+            return {"cmd": "OUT", "name": arg_text}
+        if cmd == "/in":
+            return {"cmd": "IN", "name": arg_text}
+        if cmd == "/confirm":
+            return {"cmd": "CONFIRM", "target": arg_text}
+        if cmd == "/add":
+            # Allow: /add Item Name | 500
+            if "|" in arg_text:
+                name, price = arg_text.rsplit("|", 1)
+                return {"cmd": "ADD", "name": name.strip(), "price": price.strip()}
+            # Fallback: /add Item Name 500
+            match = re.match(r"(.+)\s+([0-9]+(?:\.[0-9]+)?)$", arg_text)
+            if match:
+                return {"cmd": "ADD", "name": match.group(1).strip(), "price": match.group(2).strip()}
+            return {"cmd": "ADD", "name": "", "price": ""}
+        return {"cmd": "UNKNOWN"}
+
+    # Legacy format support: only if command token is explicitly uppercase.
+    first = raw.split()[0]
+    if first.isupper() and first in {"HELP", "MENU", "OUT", "IN", "CONFIRM", "ADD"}:
+        parts = raw.split(maxsplit=1)
+        arg_text = parts[1].strip() if len(parts) > 1 else ""
+        if first == "HELP":
+            return {"cmd": "HELP"}
+        if first == "MENU":
+            return {"cmd": "MENU"}
+        if first == "OUT":
+            return {"cmd": "OUT", "name": arg_text}
+        if first == "IN":
+            return {"cmd": "IN", "name": arg_text}
+        if first == "CONFIRM":
+            return {"cmd": "CONFIRM", "target": arg_text}
+        if first == "ADD":
+            if "|" in arg_text:
+                name, price = arg_text.rsplit("|", 1)
+                return {"cmd": "ADD", "name": name.strip(), "price": price.strip()}
+            match = re.match(r"(.+)\s+([0-9]+(?:\.[0-9]+)?)$", arg_text)
+            if match:
+                return {"cmd": "ADD", "name": match.group(1).strip(), "price": match.group(2).strip()}
+            return {"cmd": "ADD", "name": "", "price": ""}
+
+    return None
+
+
+def process_owner_command(command: dict, db: Session):
+    cmd = command.get("cmd")
 
     if cmd == "CONFIRM":
-        if len(parts) < 2:
-            return "Usage: CONFIRM <Name>"
-        target_name = " ".join(parts[1:])
-        target_user = db.query(User).filter(User.name.ilike(f"%{target_name}%")).first()
-        if target_user:
+        target = (command.get("target") or "").strip()
+        if not target:
+            return "Usage: /confirm <order_id>\n\n" + OWNER_HELP_TEXT
+
+        if target.isdigit():
+            order = db.query(Order).filter(Order.id == int(target), Order.status == "Pending").first()
+            if order:
+                order.status = "PAID"
+                db.commit()
+                target_user = db.query(User).filter(User.id == order.user_id).first()
+                if not target_user:
+                    return f"Order #{order.id} marked PAID, but user record is missing."
+                last_msg = db.query(Message).filter(Message.contact_id == target_user.phone_number).order_by(Message.id.desc()).first()
+                platform = last_msg.platform if last_msg else "whatsapp"
+                send_reply(platform, target_user.phone_number, f"Order #{order.id} confirmed. We are packing it now.", db)
+                return f"Approved order #{order.id}."
+            return f"No pending order found for id {target}."
+
+        # Fallback by name for convenience, but warn if ambiguous.
+        matches = db.query(User).filter(User.name.ilike(f"%{target}%")).all()
+        if len(matches) > 1:
+            sample = ", ".join([f"{u.name}({u.id})" for u in matches[:5]])
+            return f"Multiple users match '{target}'. Use /confirm <order_id>.\nMatches: {sample}"
+        if len(matches) == 1:
+            target_user = matches[0]
             order = db.query(Order).filter(Order.user_id == target_user.id, Order.status == "Pending").first()
             if order:
                 order.status = "PAID"
@@ -163,16 +280,17 @@ def process_owner_command(message_text: str, db: Session):
                 last_msg = db.query(Message).filter(Message.contact_id == target_user.phone_number).order_by(Message.id.desc()).first()
                 platform = last_msg.platform if last_msg else "whatsapp"
                 send_reply(platform, target_user.phone_number, f"Order #{order.id} confirmed. We are packing it now.", db)
-                return f"Approved {target_name}."
-            return "No pending order."
-        return "Student not found."
+                return f"Approved order #{order.id} for {target_user.name}."
+            return f"No pending order for {target_user.name}."
+        return f"No user found for '{target}'."
 
     if cmd == "ADD":
-        if len(parts) < 3:
-            return "Usage: ADD <Item> <Price>"
+        name = (command.get("name") or "").strip()
+        price_raw = (command.get("price") or "").strip()
+        if not name or not price_raw:
+            return "Usage: /add <item name> | <price>\nExample: /add Jollof Rice | 500"
         try:
-            price = parse_naira_amount(parts[-1])
-            name = " ".join(parts[1:-1])
+            price = parse_naira_amount(price_raw)
             item = db.query(MenuItem).filter(MenuItem.name.ilike(name)).first()
             if item:
                 item.price = price
@@ -187,9 +305,9 @@ def process_owner_command(message_text: str, db: Session):
             return "Price must be a number."
 
     if cmd == "OUT":
-        if len(parts) < 2:
-            return "Usage: OUT <Item>"
-        name = " ".join(parts[1:])
+        name = (command.get("name") or "").strip()
+        if not name:
+            return "Usage: /out <item name>"
         item = db.query(MenuItem).filter(MenuItem.name.ilike(f"%{name}%")).first()
         if item:
             item.is_available = False
@@ -198,9 +316,9 @@ def process_owner_command(message_text: str, db: Session):
         return "Item not found."
 
     if cmd == "IN":
-        if len(parts) < 2:
-            return "Usage: IN <Item>"
-        name = " ".join(parts[1:])
+        name = (command.get("name") or "").strip()
+        if not name:
+            return "Usage: /in <item name>"
         item = db.query(MenuItem).filter(MenuItem.name.ilike(f"%{name}%")).first()
         if item:
             item.is_available = True
@@ -211,7 +329,10 @@ def process_owner_command(message_text: str, db: Session):
     if cmd == "MENU":
         return "Current Menu:\n" + get_live_menu_text(db)
 
-    return "Unknown command. Try: CONFIRM, ADD, OUT, IN, MENU"
+    if cmd == "HELP":
+        return OWNER_HELP_TEXT
+
+    return "Unknown command.\n\n" + OWNER_HELP_TEXT
 
 
 def process_message(
@@ -233,10 +354,11 @@ def process_message(
     )
     db.commit()
 
-    is_owner = str(user_id) == str(OWNER_ID) or str(user_id) == str(OWNER_PHONE_WHATSAPP)
+    is_owner = is_owner_sender(platform, user_id)
     words = message_text.split()
-    if is_owner and words and words[0].upper() in ["CONFIRM", "ADD", "OUT", "IN", "MENU"]:
-        reply = process_owner_command(message_text, db)
+    owner_cmd = parse_owner_command(message_text) if is_owner else None
+    if is_owner and owner_cmd:
+        reply = process_owner_command(owner_cmd, db)
         send_reply(platform, user_id, reply, db)
         return True
 
@@ -259,9 +381,14 @@ def process_message(
             f"Acct: {message_text}\n"
             f"Order #{pending_order.id}: {pending_order.items}\n"
             f"Total: N{int(pending_order.total_price or 0)}\n"
-            f"Reply 'CONFIRM {user_name}'"
+            f"Use /confirm {pending_order.id}"
         )
-        send_reply(OWNER_PLATFORM, OWNER_ID, alert, db)
+        owner_target = owner_destination()
+        if owner_target:
+            owner_platform, owner_contact = owner_target
+            send_reply(owner_platform, owner_contact, alert, db)
+        else:
+            logger.warning("owner destination not configured; skipping owner alert")
         send_reply(platform, user_id, "Seen! Wait for confirmation.", db)
         return True
 

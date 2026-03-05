@@ -127,3 +127,28 @@ Result:
 
 - No floating-point drift in totals.
 - Consistent pricing from database to response.
+
+## Vendor Command UX (Improved)
+
+The vendor command parser is now explicit to prevent accidental triggers.
+
+Preferred commands:
+
+- `/menu`
+- `/add <item name> | <price>`
+- `/out <item name>`
+- `/in <item name>`
+- `/confirm <order_id>`
+- `/help`
+
+Examples:
+
+- `/add Jollof Rice | 500`
+- `/out Chicken`
+- `/confirm 105`
+
+Notes:
+
+- Commands are processed only for the configured owner account.
+- Plain lowercase chat (e.g., `in stock?`) is no longer treated as a command.
+- Legacy uppercase commands are still supported for compatibility (`ADD`, `IN`, `OUT`, `MENU`, `CONFIRM`).
