@@ -311,6 +311,23 @@ def format_line_items(line_items: list[dict]) -> str:
     return ", ".join([f"{item['qty']} x {item['name']}" for item in line_items])
 
 
+def awaiting_payment_name_input(db: Session, platform: str, user_id: str) -> bool:
+    last_outbound = (
+        db.query(Message)
+        .filter(
+            Message.platform == platform,
+            Message.contact_id == str(user_id),
+            Message.direction == "outbound",
+        )
+        .order_by(Message.timestamp.desc())
+        .first()
+    )
+    if not last_outbound or not last_outbound.body:
+        return False
+    marker = "type the name on your bank account"
+    return marker in last_outbound.body.lower()
+
+
 def send_reply(platform: str, to_id: str, message_text: str, db: Session):
     logger.info("sending outbound message platform=%s to=%s", platform, to_id)
 
@@ -700,6 +717,9 @@ def process_message(
         reply = process_owner_command(owner_cmd, db, actor_platform=platform, actor_id=str(user_id))
         send_reply(platform, user_id, reply, db)
         return True
+    if is_owner and not owner_cmd:
+        send_reply(platform, user_id, "Use /help for vendor commands.", db)
+        return True
 
     user = db.query(User).filter(User.phone_number == str(user_id)).first()
     if not user:
@@ -713,7 +733,14 @@ def process_message(
         return True
 
     pending_order = db.query(Order).filter(Order.user_id == user.id, Order.status == "Pending").first()
-    if pending_order and len(words) < 5 and "CONFIRM" not in message_text.upper():
+    waiting_for_account_name = awaiting_payment_name_input(db, platform, user_id)
+    if (
+        not is_owner
+        and pending_order
+        and waiting_for_account_name
+        and len(words) < 5
+        and "CONFIRM" not in message_text.upper()
+    ):
         alert = (
             f"NEW PAYMENT\n"
             f"User: {user_name}\n"

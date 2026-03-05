@@ -174,3 +174,5 @@ Notes:
 - Commands are processed only for the configured owner account.
 - Plain lowercase chat (e.g., `in stock?`) is no longer treated as a command.
 - Legacy uppercase commands are still supported for compatibility (`ADD`, `IN`, `OUT`, `MENU`, `CONFIRM`).
+- Owner non-command text now returns `Use /help for vendor commands.`
+- Payment account-name capture only triggers after the system prompts: `type the NAME on your bank account`.
