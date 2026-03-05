@@ -176,3 +176,5 @@ Notes:
 - Legacy uppercase commands are still supported for compatibility (`ADD`, `IN`, `OUT`, `MENU`, `CONFIRM`).
 - Owner non-command text now returns `Use /help for vendor commands.`
 - Payment account-name capture only triggers after the system prompts: `type the NAME on your bank account`.
+- No-slash aliases are supported safely (`menu`, `help`, `confirm`, `add`, `out`, `stock`, `restock`).
+- Ambiguous plain `in ...` is intentionally ignored in no-slash mode; use `restock ...` or `/in ...`.

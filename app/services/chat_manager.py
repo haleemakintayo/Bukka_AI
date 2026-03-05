@@ -24,22 +24,23 @@ logger = logging.getLogger(__name__)
 
 OWNER_HELP_TEXT = (
     "Vendor commands:\n"
-    "/menu\n"
-    "/add <item name> | <price> [| <opening_stock> [| <reorder_level>]]\n"
-    "/out <item name>\n"
-    "/in <item name>\n"
-    "/confirm <order_id>\n"
-    "/stock\n"
-    "/stock add <item> | <qty>\n"
-    "/stock use <item> | <qty>\n"
-    "/stock set <item> | <qty>\n"
-    "/stock waste <item> | <qty> | <reason>\n"
-    "/stock level <item> | <qty>\n"
-    "/help\n\n"
+    "/menu or menu\n"
+    "/add <item name> | <price> [| <opening_stock> [| <reorder_level>]] or add ...\n"
+    "/out <item name> or out ...\n"
+    "/in <item name> (slash form recommended)\n"
+    "/confirm <order_id> or confirm ...\n"
+    "/stock or stock\n"
+    "/stock add <item> | <qty> or stock add ...\n"
+    "/stock use <item> | <qty> or stock use ...\n"
+    "/stock set <item> | <qty> or stock set ...\n"
+    "/stock waste <item> | <qty> | <reason> or stock waste ...\n"
+    "/stock level <item> | <qty> or stock level ...\n"
+    "/help or help\n\n"
     "Examples:\n"
     "/add Jollof Rice | 500\n"
+    "add Jollof Rice | 500\n"
     "/out Chicken\n"
-    "/confirm 105\n"
+    "confirm 105\n"
     "/stock set Jollof Rice | 20\n"
     "/stock waste Chicken | 2 | Burnt batch"
 )
@@ -466,6 +467,55 @@ def parse_owner_command(message_text: str) -> dict | None:
             if action == "level":
                 return {"cmd": "STOCK_LEVEL", "arg": tail}
             return {"cmd": "UNKNOWN"}
+
+    # Safe no-slash aliases (case-insensitive).
+    # We intentionally do not alias plain "in" to avoid accidental triggers in normal chat.
+    parts = raw.split(maxsplit=1)
+    cmd = parts[0].lower()
+    arg_text = parts[1].strip() if len(parts) > 1 else ""
+
+    if cmd == "help":
+        return {"cmd": "HELP"}
+    if cmd == "menu":
+        return {"cmd": "MENU"}
+    if cmd == "out":
+        return {"cmd": "OUT", "name": arg_text}
+    if cmd == "restock":
+        return {"cmd": "IN", "name": arg_text}
+    if cmd == "confirm":
+        return {"cmd": "CONFIRM", "target": arg_text}
+    if cmd == "add":
+        if "|" in arg_text:
+            fields = [field.strip() for field in arg_text.split("|")]
+            if len(fields) >= 2:
+                return {
+                    "cmd": "ADD",
+                    "name": fields[0],
+                    "price": fields[1],
+                    "stock_qty": fields[2] if len(fields) > 2 else "",
+                    "reorder_level": fields[3] if len(fields) > 3 else "",
+                }
+        match = re.match(r"(.+)\s+([0-9]+(?:\.[0-9]+)?)$", arg_text)
+        if match:
+            return {"cmd": "ADD", "name": match.group(1).strip(), "price": match.group(2).strip()}
+        return {"cmd": "ADD", "name": "", "price": ""}
+    if cmd == "stock":
+        if not arg_text:
+            return {"cmd": "STOCK_SNAPSHOT"}
+        parts = arg_text.split(maxsplit=1)
+        action = parts[0].lower()
+        tail = parts[1].strip() if len(parts) > 1 else ""
+        if action == "add":
+            return {"cmd": "STOCK_ADD", "arg": tail}
+        if action == "use":
+            return {"cmd": "STOCK_USE", "arg": tail}
+        if action == "set":
+            return {"cmd": "STOCK_SET", "arg": tail}
+        if action == "waste":
+            return {"cmd": "STOCK_WASTE", "arg": tail}
+        if action == "level":
+            return {"cmd": "STOCK_LEVEL", "arg": tail}
+        return {"cmd": "UNKNOWN"}
 
     return None
 
