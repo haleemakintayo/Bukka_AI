@@ -128,6 +128,28 @@ Result:
 - No floating-point drift in totals.
 - Consistent pricing from database to response.
 
+## Stock Management (Vendor Ops)
+
+Implemented basic stock controls for daily operations:
+
+1. Quantity tracking per menu item:
+   - Added `stock_qty` and `reorder_level` to `menu_items`.
+2. Auto deduction on confirmed sales:
+   - `/confirm <order_id>` now deducts stock based on order item summary.
+3. Low-stock warnings:
+   - Vendor gets warnings when stock goes below reorder level.
+4. Stock movement logs:
+   - Added `stock_movements` table to record add/use/set/waste/sale events.
+
+New vendor commands:
+
+- `/stock` (snapshot)
+- `/stock add <item> | <qty>`
+- `/stock use <item> | <qty>`
+- `/stock set <item> | <qty>`
+- `/stock waste <item> | <qty> | <reason>`
+- `/stock level <item> | <qty>`
+
 ## Vendor Command UX (Improved)
 
 The vendor command parser is now explicit to prevent accidental triggers.

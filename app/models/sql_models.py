@@ -33,6 +33,8 @@ class MenuItem(Base):
     name = Column(String, unique=True, index=True) # Unique name prevents duplicates
     price = Column(Integer)
     is_available = Column(Boolean, default=True) # Handles "Stock" (True=In Stock, False=Finished)
+    stock_qty = Column(Integer, nullable=True)  # None means not tracked yet
+    reorder_level = Column(Integer, nullable=True)  # Low-stock threshold
 
 
 class ProcessedWebhookEvent(Base):
@@ -45,3 +47,16 @@ class ProcessedWebhookEvent(Base):
     platform = Column(String, nullable=False, index=True)
     external_event_id = Column(String, nullable=False)
     claimed_at = Column(BigInteger, nullable=False)
+
+
+class StockMovement(Base):
+    __tablename__ = "stock_movements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    item_id = Column(Integer, ForeignKey("menu_items.id"), nullable=False, index=True)
+    movement_type = Column(String, nullable=False)  # add, use, set, waste, sale
+    qty = Column(Integer, nullable=False)
+    reason = Column(String, nullable=True)
+    actor_platform = Column(String, nullable=True)
+    actor_id = Column(String, nullable=True)
+    timestamp = Column(BigInteger, nullable=False, index=True)
