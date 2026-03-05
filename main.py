@@ -1,22 +1,31 @@
 # main.py
 import uvicorn
+import logging
 from fastapi import FastAPI
-from app.api.old_routes import router as api_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.endpoints import telegram, whatsapp, demo
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Backend for Bukka AI - Powered by Llama & Groq",
     version="1.0"
 )
+
+# Tightened for backend safety. Add deployed frontend domain(s) explicitly.
+ALLOWED_ORIGINS = ['*']
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows ALL origins (Safe for a Hackathon demo)
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods (GET, POST, etc.)
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 # Include the separated routers

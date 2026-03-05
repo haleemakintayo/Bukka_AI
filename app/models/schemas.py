@@ -8,14 +8,10 @@ class WhatsAppMessage(BaseModel):
     message: str
     user_name: Optional[str] = "Student"
 
-class OrderItem(BaseModel):
-    item_name: str
-    quantity: int
-
-class AIResponse(BaseModel):
-    intent: str = Field(description="ORDER, INQUIRY, or CHITCHAT")
-    order_items: List[OrderItem] = []
-    reply_message: str
+class OrderExtractionResponse(BaseModel):
+    intent: str = Field(description="order, inquiry, payment, chitchat, or unknown")
+    items: List[str] = Field(default_factory=list)
+    qty: List[int] = Field(default_factory=list)
 
 class ConsultantResponse(BaseModel):
     advice: str
