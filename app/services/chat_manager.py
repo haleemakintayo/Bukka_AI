@@ -7,8 +7,11 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
+# --- NEW IMPORTS FOR LANGCHAIN ---
+from langchain_core.messages import HumanMessage, AIMessage
+from app.services.llm_engine import order_chain, order_parser
+
 from app.models.sql_models import User, Order, Message, MenuItem, StockMovement
-from app.services.llm_engine import order_chain
 
 # --- CONFIG & SECRETS ---
 META_TOKEN = os.getenv("META_API_TOKEN")
@@ -49,7 +52,6 @@ OWNER_HELP_TEXT = (
 def get_current_time_ms():
     return int(time.time() * 1000)
 
-
 def owner_destination() -> tuple[str, str] | None:
     if OWNER_PLATFORM == "telegram":
         if OWNER_ID:
@@ -66,7 +68,6 @@ def owner_destination() -> tuple[str, str] | None:
         return ("whatsapp", str(OWNER_PHONE_WHATSAPP))
     return None
 
-
 def is_owner_sender(platform: str, user_id: str) -> bool:
     if platform == "telegram":
         return bool(OWNER_ID) and str(user_id) == str(OWNER_ID)
@@ -74,13 +75,11 @@ def is_owner_sender(platform: str, user_id: str) -> bool:
         return bool(OWNER_PHONE_WHATSAPP) and str(user_id) == str(OWNER_PHONE_WHATSAPP)
     return False
 
-
 def get_live_menu_items(db: Session):
     return db.query(MenuItem).filter(
         MenuItem.is_available == True,
         or_(MenuItem.stock_qty.is_(None), MenuItem.stock_qty > 0),
     ).all()
-
 
 def get_live_menu_text(db: Session) -> str:
     items = get_live_menu_items(db)
@@ -88,20 +87,17 @@ def get_live_menu_text(db: Session) -> str:
         return "Jollof Rice (N500), Chicken (N1000), Water (N100)"
     return "\n".join([f"- {item.name}: N{item.price or 0}" for item in items])
 
-
 def parse_naira_amount(raw_amount: str) -> int:
     amount = Decimal(raw_amount)
     if amount < 0:
         raise ValueError("Amount cannot be negative")
     return int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
-
 def parse_non_negative_int(raw_value: str) -> int:
     value = int(raw_value)
     if value < 0:
         raise ValueError("Value cannot be negative")
     return value
-
 
 def parse_name_qty(arg_text: str) -> tuple[str, str] | None:
     if "|" in arg_text:
@@ -112,7 +108,6 @@ def parse_name_qty(arg_text: str) -> tuple[str, str] | None:
         return match.group(1).strip(), match.group(2).strip()
     return None
 
-
 def parse_name_qty_reason(arg_text: str) -> tuple[str, str, str] | None:
     if "|" in arg_text:
         parts = [part.strip() for part in arg_text.split("|")]
@@ -121,11 +116,9 @@ def parse_name_qty_reason(arg_text: str) -> tuple[str, str, str] | None:
         return None
     return None
 
-
 def normalize_text(value: str) -> str:
     cleaned = "".join(ch.lower() if ch.isalnum() else " " for ch in value)
     return " ".join(cleaned.split())
-
 
 def resolve_menu_item(raw_item: str, menu_items: list[MenuItem]) -> MenuItem | None:
     target = normalize_text(raw_item)
@@ -149,7 +142,6 @@ def resolve_menu_item(raw_item: str, menu_items: list[MenuItem]) -> MenuItem | N
 
     return best_item if best_score > 0 else None
 
-
 def record_stock_movement(
     db: Session,
     item: MenuItem,
@@ -171,14 +163,12 @@ def record_stock_movement(
         )
     )
 
-
 def low_stock_message(item: MenuItem) -> str | None:
     if item.stock_qty is None or item.reorder_level is None:
         return None
     if item.stock_qty <= item.reorder_level:
         return f"{item.name} low stock ({item.stock_qty} left, reorder level {item.reorder_level})"
     return None
-
 
 def parse_order_summary_items(summary: str | None) -> list[tuple[str, int]]:
     if not summary:
@@ -194,6 +184,82 @@ def parse_order_summary_items(summary: str | None) -> list[tuple[str, int]]:
         if qty > 0 and name:
             parsed.append((name, qty))
     return parsed
+
+def format_line_items(line_items: list[dict]) -> str:
+    return ", ".join([f"{item['qty']} x {item['name']}" for item in line_items])
+
+
+# --- NEW FUNCTION: APPLY CART UPDATES ---
+# This replaces `build_order_from_extraction`
+def apply_cart_updates(current_items_str: str, extracted_items: list, db: Session):
+    """
+    Takes the existing cart string, processes additions and removals based
+    on the AI's extraction, and returns the new cart string and total.
+    """
+    # 1. Parse existing cart into a dictionary
+    current_cart = {}  # Format: { "Jollof Rice": 2 }
+    all_menu_items = db.query(MenuItem).all()
+    live_menu_items = get_live_menu_items(db)
+    if current_items_str:
+        for name, qty in parse_order_summary_items(current_items_str):
+            existing_item = resolve_menu_item(name, all_menu_items)
+            canonical_name = existing_item.name if existing_item else name
+            current_cart[canonical_name] = current_cart.get(canonical_name, 0) + qty
+
+    unmatched = []
+    
+    # 2. Apply extracted actions (add/remove)
+    for item_data in extracted_items:
+        if isinstance(item_data, dict):
+            payload = item_data
+        elif hasattr(item_data, "model_dump"):
+            payload = item_data.model_dump()
+        else:
+            payload = {}
+        raw_name = str(payload.get("item", "")).strip()
+        try:
+            qty = int(payload.get("quantity", 1))
+        except (TypeError, ValueError):
+            qty = 1
+        if qty <= 0:
+            qty = 1
+
+        action = str(payload.get("action", "add")).lower().strip()
+        if action not in {"add", "remove"}:
+            action = "add"
+
+        # Add should use only live menu items; remove should still resolve existing menu items.
+        resolver_pool = live_menu_items if action == "add" else all_menu_items
+        menu_item = resolve_menu_item(raw_name, resolver_pool)
+        if not menu_item:
+            unmatched.append(raw_name)
+            continue
+            
+        name = menu_item.name
+        if action == "add":
+            current_cart[name] = current_cart.get(name, 0) + qty
+        elif action == "remove":
+            current_cart[name] = current_cart.get(name, 0) - qty
+            # Clean up if they removed everything
+            if current_cart[name] <= 0:
+                del current_cart[name]
+                
+    # 3. Rebuild summary string and calculate total price deterministically
+    line_items = []
+    total = 0
+    for name, qty in current_cart.items():
+        if qty <= 0:
+            continue
+        menu_item = resolve_menu_item(name, all_menu_items)
+        if menu_item:
+            unit_price = int(menu_item.price or 0)
+            total += unit_price * qty
+            line_items.append({"name": menu_item.name, "qty": qty, "unit_price": unit_price})
+        else:
+            line_items.append({"name": name, "qty": qty, "unit_price": 0})
+
+    summary = format_line_items(line_items)
+    return summary, total, unmatched
 
 
 def apply_sale_stock_deduction(
@@ -250,7 +316,6 @@ def apply_sale_stock_deduction(
         unresolved_msg = "Unmapped items skipped for stock deduction: " + ", ".join(unresolved)
     return True, unresolved_msg, low_alerts
 
-
 def format_stock_snapshot(items: list[MenuItem]) -> str:
     if not items:
         return "No menu items found."
@@ -271,47 +336,6 @@ def format_stock_snapshot(items: list[MenuItem]) -> str:
         lines.append(f"- {item.name}: stock={stock_text}, level={level_text}, price=N{item.price or 0}{low_flag}")
     return "Stock Snapshot:\n" + "\n".join(lines)
 
-
-def build_order_from_extraction(extraction: dict, db: Session):
-    menu_items = get_live_menu_items(db)
-    extracted_items = extraction.get("items") or []
-    extracted_qty = extraction.get("qty") or []
-    line_items = []
-    unmatched_items = []
-
-    for index, raw_item in enumerate(extracted_items):
-        qty = extracted_qty[index] if index < len(extracted_qty) else 1
-        try:
-            qty = int(qty)
-            if qty < 1:
-                qty = 1
-        except (TypeError, ValueError):
-            qty = 1
-
-        menu_item = resolve_menu_item(raw_item, menu_items)
-        if not menu_item:
-            unmatched_items.append(raw_item)
-            continue
-
-        unit_price = int(menu_item.price or 0)
-        line_total = unit_price * qty
-        line_items.append(
-            {
-                "name": menu_item.name,
-                "qty": qty,
-                "unit_price": unit_price,
-                "line_total": line_total,
-            }
-        )
-
-    total = sum(item["line_total"] for item in line_items)
-    return line_items, total, unmatched_items
-
-
-def format_line_items(line_items: list[dict]) -> str:
-    return ", ".join([f"{item['qty']} x {item['name']}" for item in line_items])
-
-
 def awaiting_payment_name_input(db: Session, platform: str, user_id: str) -> bool:
     last_outbound = (
         db.query(Message)
@@ -327,7 +351,6 @@ def awaiting_payment_name_input(db: Session, platform: str, user_id: str) -> boo
         return False
     marker = "type the name on your bank account"
     return marker in last_outbound.body.lower()
-
 
 def send_reply(platform: str, to_id: str, message_text: str, db: Session):
     logger.info("sending outbound message platform=%s to=%s", platform, to_id)
@@ -361,13 +384,11 @@ def send_reply(platform: str, to_id: str, message_text: str, db: Session):
     except requests.RequestException:
         logger.exception("outbound message delivery failed platform=%s to=%s", platform, to_id)
 
-
 def parse_owner_command(message_text: str) -> dict | None:
     raw = (message_text or "").strip()
     if not raw:
         return None
 
-    # Preferred format: slash commands.
     if raw.startswith("/"):
         parts = raw.split(maxsplit=1)
         cmd = parts[0].lower()
@@ -384,7 +405,6 @@ def parse_owner_command(message_text: str) -> dict | None:
         if cmd == "/confirm":
             return {"cmd": "CONFIRM", "target": arg_text}
         if cmd == "/add":
-            # Allow: /add Item Name | 500 | 20 | 5
             if "|" in arg_text:
                 fields = [field.strip() for field in arg_text.split("|")]
                 if len(fields) >= 2:
@@ -395,7 +415,6 @@ def parse_owner_command(message_text: str) -> dict | None:
                         "stock_qty": fields[2] if len(fields) > 2 else "",
                         "reorder_level": fields[3] if len(fields) > 3 else "",
                     }
-            # Fallback: /add Item Name 500
             match = re.match(r"(.+)\s+([0-9]+(?:\.[0-9]+)?)$", arg_text)
             if match:
                 return {"cmd": "ADD", "name": match.group(1).strip(), "price": match.group(2).strip()}
@@ -420,7 +439,6 @@ def parse_owner_command(message_text: str) -> dict | None:
             return {"cmd": "UNKNOWN"}
         return {"cmd": "UNKNOWN"}
 
-    # Legacy format support: only if command token is explicitly uppercase.
     first = raw.split()[0]
     if first.isupper() and first in {"HELP", "MENU", "OUT", "IN", "CONFIRM", "ADD", "STOCK"}:
         parts = raw.split(maxsplit=1)
@@ -468,8 +486,6 @@ def parse_owner_command(message_text: str) -> dict | None:
                 return {"cmd": "STOCK_LEVEL", "arg": tail}
             return {"cmd": "UNKNOWN"}
 
-    # Safe no-slash aliases (case-insensitive).
-    # We intentionally do not alias plain "in" to avoid accidental triggers in normal chat.
     parts = raw.split(maxsplit=1)
     cmd = parts[0].lower()
     arg_text = parts[1].strip() if len(parts) > 1 else ""
@@ -519,7 +535,6 @@ def parse_owner_command(message_text: str) -> dict | None:
 
     return None
 
-
 def process_owner_command(
     command: dict,
     db: Session,
@@ -556,7 +571,6 @@ def process_owner_command(
                 return f"Approved order #{order.id}.{extra_text}"
             return f"No pending order found for id {target}."
 
-        # Fallback by name for convenience, but warn if ambiguous.
         matches = db.query(User).filter(User.name.ilike(f"%{target}%")).all()
         if len(matches) > 1:
             sample = ", ".join([f"{u.name}({u.id})" for u in matches[:5]])
@@ -740,7 +754,7 @@ def process_owner_command(
 
     return "Unknown command.\n\n" + OWNER_HELP_TEXT
 
-
+# --- THE UPDATED PROCESS_MESSAGE FLOW ---
 def process_message(
     platform: str,
     user_id: str,
@@ -749,20 +763,21 @@ def process_message(
     db: Session,
     source_timestamp_ms: int | None = None,
 ) -> bool:
-    db.add(
-        Message(
-            platform=platform,
-            contact_id=str(user_id),
-            direction="inbound",
-            body=message_text,
-            timestamp=source_timestamp_ms if source_timestamp_ms else get_current_time_ms(),
-        )
+    inbound_message = Message(
+        platform=platform,
+        contact_id=str(user_id),
+        direction="inbound",
+        body=message_text,
+        timestamp=source_timestamp_ms if source_timestamp_ms else get_current_time_ms(),
     )
+    db.add(inbound_message)
     db.commit()
+    db.refresh(inbound_message)
 
     is_owner = is_owner_sender(platform, user_id)
     words = message_text.split()
     owner_cmd = parse_owner_command(message_text) if is_owner else None
+    
     if is_owner and owner_cmd:
         reply = process_owner_command(owner_cmd, db, actor_platform=platform, actor_id=str(user_id))
         send_reply(platform, user_id, reply, db)
@@ -784,6 +799,7 @@ def process_message(
 
     pending_order = db.query(Order).filter(Order.user_id == user.id, Order.status == "Pending").first()
     waiting_for_account_name = awaiting_payment_name_input(db, platform, user_id)
+    
     if (
         not is_owner
         and pending_order
@@ -808,82 +824,102 @@ def process_message(
         send_reply(platform, user_id, "Seen! Wait for confirmation.", db)
         return True
 
+    # --- NEW LLM INTEGRATION START ---
     try:
         live_menu = get_live_menu_text(db)
+        
+        # 1. Fetch History and Convert to LangChain Messages
         history_msgs = (
             db.query(Message)
-            .filter(Message.contact_id == str(user_id))
+            .filter(
+                Message.contact_id == str(user_id),
+                Message.id != inbound_message.id,
+            )
             .order_by(Message.timestamp.desc())
             .limit(10)
             .all()
         )
-        history = "\n".join([f"{'User' if m.direction == 'inbound' else 'AI'}: {m.body}" for m in reversed(history_msgs)])
-        full_prompt = f"HISTORY:\n{history}\nCURRENT MSG: {message_text}"
+        
+        lc_history = []
+        for m in reversed(history_msgs):
+            if m.direction == "inbound":
+                lc_history.append(HumanMessage(content=m.body))
+            else:
+                lc_history.append(AIMessage(content=m.body))
 
-        response = order_chain.invoke({"menu": live_menu, "user_input": full_prompt})
+        # 2. Get Format Instructions from Pydantic
+        format_instructions = order_parser.get_format_instructions()
+
+        # 3. Invoke the LangChain
+        response = order_chain.invoke({
+            "menu": live_menu,
+            "format_instructions": format_instructions,
+            "chat_history": lc_history,
+            "user_input": message_text
+        })
+        
+        # 4. Extract standard variables
         extraction = response if isinstance(response, dict) else {}
         intent = str(extraction.get("intent", "unknown")).lower().strip()
+        ai_reply = extraction.get("message", "I dey with you.")
+        extracted_items = extraction.get("extracted_items", [])
 
-        if intent == "payment":
-            send_reply(platform, user_id, "Okay! Please type the NAME on your bank account.", db)
-            return True
+        # 5. Handle Cart State Dynamically (Additions & Removals)
+        summary = ""
+        total = 0
+        unmatched_text = ""
 
-        if intent == "inquiry":
-            extracted_items = extraction.get("items") or []
-            available_items = get_live_menu_items(db)
-            if not extracted_items:
-                send_reply(platform, user_id, f"Current menu:\n{live_menu}", db)
-                return True
-
-            price_lines = []
-            for raw_item in extracted_items:
-                match = resolve_menu_item(raw_item, available_items)
-                if match:
-                    price_lines.append(f"- {match.name}: N{match.price or 0}")
-
-            if price_lines:
-                send_reply(platform, user_id, "Here are the prices:\n" + "\n".join(price_lines), db)
-            else:
-                send_reply(platform, user_id, f"I could not find that item. Current menu:\n{live_menu}", db)
-            return True
-
-        if intent == "order":
-            line_items, total, unmatched = build_order_from_extraction(extraction, db)
-            if not line_items:
-                send_reply(platform, user_id, f"I could not identify valid menu items.\nCurrent menu:\n{live_menu}", db)
-                return True
-
-            summary = format_line_items(line_items)
+        if extracted_items:
+            current_summary = pending_order.items if pending_order else ""
+            summary, total, unmatched = apply_cart_updates(current_summary, extracted_items, db)
+            
+            # Save the updated cart state
             if pending_order:
                 pending_order.items = summary
                 pending_order.total_price = total
-                pending_order.status = "Pending"
                 db.commit()
-                order_id = pending_order.id
-            else:
-                new_order = Order(user_id=user.id, items=summary, total_price=total, status="Pending")
-                db.add(new_order)
+            elif summary: # Only create an order row if there are actual items
+                pending_order = Order(user_id=user.id, items=summary, total_price=total, status="Pending")
+                db.add(pending_order)
                 db.commit()
-                db.refresh(new_order)
-                order_id = new_order.id
-
-            unmatched_text = ""
+                db.refresh(pending_order)
+            
             if unmatched:
-                unmatched_text = "\nUnavailable/unclear items ignored: " + ", ".join(unmatched)
+                unmatched_text = f"\n\n(Note: We no get {', '.join(unmatched)})"
 
-            reply = (
-                f"Order #{order_id} captured: {summary}.\n"
-                f"Total: N{total}.\n"
-                "Pay to Opay: 123456.\n"
-                "Reply 'PAID' when done."
-                f"{unmatched_text}"
-            )
+        # 6. Route Intents & Use Auntie Chioma's Voice
+        if intent == "checkout":
+            if not pending_order or not pending_order.items:
+                reply = f"{ai_reply}\n\nAh ah, your cart is empty! Wetin you wan buy today?"
+            else:
+                reply = (
+                    f"{ai_reply}\n\n"
+                    f"Your Order (Ref: {pending_order.id}):\n"
+                    f"{pending_order.items}\n\n"
+                    f"Total: N{int(pending_order.total_price or 0)}\n\n"
+                    f"Please pay to Opay: 123456789.\nReply 'PAID' when done."
+                )
             send_reply(platform, user_id, reply, db)
             return True
 
-        send_reply(platform, user_id, f"I can help with orders and prices.\nCurrent menu:\n{live_menu}", db)
-        return True
-    except Exception:
+        elif intent == "ordering":
+            # Append current cart state below her natural chat message
+            if pending_order and pending_order.items:
+                current_cart_str = pending_order.items
+                current_total = int(pending_order.total_price or 0)
+            else:
+                current_cart_str = summary if summary else "Cart is empty"
+                current_total = int(total or 0)
+            reply = f"{ai_reply}\n\nCurrent Cart: {current_cart_str} (N{current_total}){unmatched_text}"
+            send_reply(platform, user_id, reply, db)
+            return True
+
+        else:
+            # Intents: greeting, inquiry, irrelevant
+            send_reply(platform, user_id, f"{ai_reply}{unmatched_text}", db)
+            return True
+
+    except Exception as e:
         logger.exception("message processing failed platform=%s user_id=%s", platform, user_id)
-        send_reply(platform, user_id, "Network error. Try again.", db)
+        send_reply(platform, user_id, "Network error dey oh. Abeg try again.", db)
         return False

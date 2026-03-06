@@ -1,17 +1,24 @@
 # app/models/schemas.py
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from pydantic import BaseModel, Field, ConfigDict
+from typing import List, Optional, Literal
 
-# --- Existing Models ---
-class WhatsAppMessage(BaseModel):
-    user_id: str = Field(..., description="User's Phone Number")
-    message: str
-    user_name: Optional[str] = "Student"
+# --- 1. AI Extraction Models (Synchronized with llm_engine.py) ---
+
+class ExtractedItem(BaseModel):
+    item: str = Field(description="The exact name of the menu item from the Bukka")
+    quantity: int = Field(default=1, ge=1, description="The number of portions requested")
+    action: Literal["add", "remove"] = Field(description="Either 'add' or 'remove'")
 
 class OrderExtractionResponse(BaseModel):
-    intent: str = Field(description="order, inquiry, payment, chitchat, or unknown")
-    items: List[str] = Field(default_factory=list)
-    qty: List[int] = Field(default_factory=list)
+    thought: str = Field(description="Brief internal reasoning about the user's intent")
+    message: str = Field(description="Auntie Chioma's reply in Nigerian Pidgin")
+    extracted_items: List[ExtractedItem] = Field(default_factory=list, description="List of food items to add/remove")
+    intent: Literal["greeting", "inquiry", "ordering", "checkout", "irrelevant"] = Field(
+        description="Must be one of: 'greeting', 'inquiry', 'ordering', 'checkout', 'irrelevant'"
+    )
+
+
+# --- 2. Standard Models ---
 
 class ConsultantResponse(BaseModel):
     advice: str
@@ -23,9 +30,10 @@ class UserResponse(BaseModel):
     loyalty_points: int
     
     # Pydantic V2 Config to read SQLAlchemy models
-    model_config = {"from_attributes": True}    
+    model_config = ConfigDict(from_attributes=True)    
 
-# --- Webhook Schemas (Fixed for Meta Validation) ---
+
+# --- 3. WhatsApp Webhook Schemas (Meta Validation) ---
 
 class TextObject(BaseModel):
     body: str
@@ -37,8 +45,8 @@ class MessageObject(BaseModel):
     text: TextObject
     type: str = "text"
     
-    # FIX 1: Ignore extra fields (like 'from_logical_id')
-    model_config = {"extra": "ignore"}
+    # Ignore extra fields (like 'from_logical_id')
+    model_config = ConfigDict(extra="ignore")
 
 class ContactProfile(BaseModel):
     name: str
@@ -51,12 +59,12 @@ class ValueObject(BaseModel):
     messaging_product: str
     metadata: dict
     
-    # FIX 2: Make these Optional so Status Updates don't crash the app
+    # Make these Optional so Status Updates (Read/Delivered) don't crash the app
     contacts: Optional[List[ContactObject]] = None
     messages: Optional[List[MessageObject]] = None
     
-    # FIX 3: Ignore extra fields (like 'statuses')
-    model_config = {"extra": "ignore"}
+    # Ignore extra fields (like 'statuses')
+    model_config = ConfigDict(extra="ignore")
 
 class ChangeObject(BaseModel):
     value: ValueObject
@@ -70,9 +78,10 @@ class WhatsAppWebhookSchema(BaseModel):
     object: str = "whatsapp_business_account"
     entry: List[EntryObject]
 
-    class Config:
-        populate_by_name = True
-        json_schema_extra = {
+    # Pydantic V2 replacement for class Config
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_schema_extra={
             "example": {
                 "object": "whatsapp_business_account",
                 "entry": [{
@@ -95,3 +104,4 @@ class WhatsAppWebhookSchema(BaseModel):
                 }]
             }
         }
+    )
