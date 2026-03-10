@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import requests
 import time
@@ -9,7 +10,14 @@ from sqlalchemy import or_
 
 # --- NEW IMPORTS FOR LANGCHAIN ---
 from langchain_core.messages import HumanMessage, AIMessage
-from app.services.llm_engine import order_chain, order_parser
+from langchain_core.exceptions import OutputParserException
+from app.services.llm_engine import ORDER_MODEL_NAME, llm, order_chain, order_parser, order_prompt
+from app.services.prompt_cache import (
+    get_exact_cached_reply,
+    get_semantic_cached_reply,
+    is_likely_transactional_text,
+    store_cached_reply,
+)
 
 from app.models.sql_models import User, Order, Message, MenuItem, StockMovement
 
@@ -24,6 +32,7 @@ OWNER_ID = os.getenv("OWNER_ID")
 OWNER_PHONE_WHATSAPP = os.getenv("OWNER_PHONE")
 
 logger = logging.getLogger(__name__)
+LLM_INVOCATIONS_TOTAL = 0
 
 OWNER_HELP_TEXT = (
     "Vendor commands:\n"
@@ -184,6 +193,26 @@ def parse_order_summary_items(summary: str | None) -> list[tuple[str, int]]:
         if qty > 0 and name:
             parsed.append((name, qty))
     return parsed
+
+
+def _parse_llm_json(text: str) -> dict:
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return {}
+    try:
+        data = json.loads(text[start:end + 1])
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
 
 def format_line_items(line_items: list[dict]) -> str:
     return ", ".join([f"{item['qty']} x {item['name']}" for item in line_items])
@@ -827,6 +856,47 @@ def process_message(
     # --- NEW LLM INTEGRATION START ---
     try:
         live_menu = get_live_menu_text(db)
+        role = "owner" if is_owner else "customer"
+
+        should_bypass_cache_lookup = is_likely_transactional_text(message_text)
+        if should_bypass_cache_lookup:
+            logger.info(
+                "cache_bypass_intent reason=likely_transaction_text platform=%s user_id=%s",
+                platform,
+                user_id,
+            )
+        else:
+            exact_hit = get_exact_cached_reply(
+                platform=platform,
+                user_id=str(user_id),
+                role=role,
+                message_text=message_text,
+                menu_text=live_menu,
+                model_identifier=ORDER_MODEL_NAME,
+            )
+            if exact_hit and exact_hit.get("reply"):
+                logger.info("cache_exact_hit platform=%s user_id=%s", platform, user_id)
+                send_reply(platform, user_id, str(exact_hit["reply"]), db)
+                return True
+
+            semantic_hit = get_semantic_cached_reply(
+                platform=platform,
+                user_id=str(user_id),
+                role=role,
+                message_text=message_text,
+                menu_text=live_menu,
+                model_identifier=ORDER_MODEL_NAME,
+            )
+            if semantic_hit and semantic_hit.get("reply"):
+                logger.info(
+                    "cache_semantic_hit platform=%s user_id=%s similarity=%.4f",
+                    platform,
+                    user_id,
+                    float(semantic_hit.get("similarity_score", 0.0)),
+                )
+                send_reply(platform, user_id, str(semantic_hit["reply"]), db)
+                return True
+            logger.info("cache_miss platform=%s user_id=%s", platform, user_id)
         
         # 1. Fetch History and Convert to LangChain Messages
         history_msgs = (
@@ -851,15 +921,45 @@ def process_message(
         format_instructions = order_parser.get_format_instructions()
 
         # 3. Invoke the LangChain
-        response = order_chain.invoke({
-            "menu": live_menu,
-            "format_instructions": format_instructions,
-            "chat_history": lc_history,
-            "user_input": message_text
-        })
-        
+        global LLM_INVOCATIONS_TOTAL
+        LLM_INVOCATIONS_TOTAL += 1
+        logger.info(
+            "llm_invocations_total=%s platform=%s user_id=%s",
+            LLM_INVOCATIONS_TOTAL,
+            platform,
+            user_id,
+        )
+        try:
+            response = order_chain.invoke({
+                "menu": live_menu,
+                "format_instructions": format_instructions,
+                "chat_history": lc_history,
+                "user_input": message_text
+            })
+            extraction = response if isinstance(response, dict) else {}
+        except OutputParserException:
+            logger.exception("llm_output_parsing_failed platform=%s user_id=%s", platform, user_id)
+            # Fallback: run the prompt without parser, then parse JSON defensively.
+            LLM_INVOCATIONS_TOTAL += 1
+            logger.info(
+                "llm_invocations_total=%s platform=%s user_id=%s fallback=raw_prompt",
+                LLM_INVOCATIONS_TOTAL,
+                platform,
+                user_id,
+            )
+            raw_msg = (order_prompt | llm).invoke({
+                "menu": live_menu,
+                "format_instructions": format_instructions,
+                "chat_history": lc_history,
+                "user_input": message_text
+            })
+            raw_text = raw_msg.content if hasattr(raw_msg, "content") else str(raw_msg)
+            extraction = _parse_llm_json(raw_text)
+        except Exception:
+            logger.exception("llm_invoke_failed platform=%s user_id=%s", platform, user_id)
+            extraction = {}
+
         # 4. Extract standard variables
-        extraction = response if isinstance(response, dict) else {}
         intent = str(extraction.get("intent", "unknown")).lower().strip()
         ai_reply = extraction.get("message", "I dey with you.")
         extracted_items = extraction.get("extracted_items", [])
@@ -889,6 +989,7 @@ def process_message(
 
         # 6. Route Intents & Use Auntie Chioma's Voice
         if intent == "checkout":
+            logger.info("cache_bypass_intent intent=checkout platform=%s user_id=%s", platform, user_id)
             if not pending_order or not pending_order.items:
                 reply = f"{ai_reply}\n\nAh ah, your cart is empty! Wetin you wan buy today?"
             else:
@@ -903,6 +1004,7 @@ def process_message(
             return True
 
         elif intent == "ordering":
+            logger.info("cache_bypass_intent intent=ordering platform=%s user_id=%s", platform, user_id)
             # Append current cart state below her natural chat message
             if pending_order and pending_order.items:
                 current_cart_str = pending_order.items
@@ -916,7 +1018,22 @@ def process_message(
 
         else:
             # Intents: greeting, inquiry, irrelevant
-            send_reply(platform, user_id, f"{ai_reply}{unmatched_text}", db)
+            final_reply = f"{ai_reply}{unmatched_text}"
+            cache_stored = store_cached_reply(
+                platform=platform,
+                user_id=str(user_id),
+                role=role,
+                message_text=message_text,
+                menu_text=live_menu,
+                model_identifier=ORDER_MODEL_NAME,
+                intent=intent,
+                reply_text=final_reply,
+            )
+            if cache_stored:
+                logger.info("cache_store_ok intent=%s platform=%s user_id=%s", intent, platform, user_id)
+            else:
+                logger.info("cache_bypass_intent intent=%s platform=%s user_id=%s", intent, platform, user_id)
+            send_reply(platform, user_id, final_reply, db)
             return True
 
     except Exception as e:
