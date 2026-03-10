@@ -8,7 +8,7 @@ from app.core.config import settings
 from app.models.schemas import OrderExtractionResponse
 from app.services.ai_tools import consultant_tools
 
-ORDER_MODEL_NAME = "meta-llama/llama-3.3-70b-versatile"
+ORDER_MODEL_NAME = "llama-3.3-70b-versatile"
 
 # 1. Initialize Groq Model
 llm = ChatGroq(
