@@ -35,26 +35,18 @@ logger = logging.getLogger(__name__)
 LLM_INVOCATIONS_TOTAL = 0
 
 OWNER_HELP_TEXT = (
-    "Vendor commands:\n"
-    "/menu or menu\n"
-    "/add <item name> | <price> [| <opening_stock> [| <reorder_level>]] or add ...\n"
-    "/out <item name> or out ...\n"
-    "/in <item name> (slash form recommended)\n"
-    "/confirm <order_id> or confirm ...\n"
-    "/stock or stock\n"
-    "/stock add <item> | <qty> or stock add ...\n"
-    "/stock use <item> | <qty> or stock use ...\n"
-    "/stock set <item> | <qty> or stock set ...\n"
-    "/stock waste <item> | <qty> | <reason> or stock waste ...\n"
-    "/stock level <item> | <qty> or stock level ...\n"
-    "/help or help\n\n"
-    "Examples:\n"
-    "/add Jollof Rice | 500\n"
-    "add Jollof Rice | 500\n"
-    "/out Chicken\n"
-    "confirm 105\n"
-    "/stock set Jollof Rice | 20\n"
-    "/stock waste Chicken | 2 | Burnt batch"
+    "👋 *Vendor Commands*\n\n"
+    "🛒 *Manage Menu:*\n"
+    "• `menu` - See all your food\n"
+    "• `add <food name> <price>` (e.g., add Jollof 500)\n"
+    "• `finished <food name>` (e.g., finished Jollof)\n"
+    "• `restock <food name>` (e.g., restock Jollof)\n\n"
+    "💰 *Orders:*\n"
+    "• `confirm <number>` - Approve an order (e.g., confirm 105)\n\n"
+    "📦 *Manage Stock (Optional):*\n"
+    "• `stock` - See your inventory\n"
+    "• `stock add <food> <qty>` (e.g., stock add Jollof 20)\n"
+    "• `stock waste <food> <qty>` (e.g., stock waste Chicken 2)"
 )
 
 
@@ -109,12 +101,21 @@ def parse_non_negative_int(raw_value: str) -> int:
     return value
 
 def parse_name_qty(arg_text: str) -> tuple[str, str] | None:
+    # 1. Try to split by comma first (User typed: "Jollof, 20")
+    if "," in arg_text:
+        name, qty = arg_text.rsplit(",", 1)
+        return name.strip(), qty.strip()
+    
+    # 2. Try the old pipe method just in case ("Jollof | 20")
     if "|" in arg_text:
         name, qty = arg_text.rsplit("|", 1)
         return name.strip(), qty.strip()
-    match = re.match(r"(.+)\s+([0-9]+)$", arg_text.strip())
+        
+    # 3. Fallback: Look for text followed by a number ("Jollof 20")
+    match = re.match(r"(.+?)\s+([0-9]+)$", arg_text.strip())
     if match:
         return match.group(1).strip(), match.group(2).strip()
+        
     return None
 
 def parse_name_qty_reason(arg_text: str) -> tuple[str, str, str] | None:
@@ -427,11 +428,11 @@ def parse_owner_command(message_text: str) -> dict | None:
             return {"cmd": "HELP"}
         if cmd == "/menu":
             return {"cmd": "MENU"}
-        if cmd == "/out":
+        if cmd in {"out", "finished", "finish", "empty"}: 
             return {"cmd": "OUT", "name": arg_text}
-        if cmd == "/in":
+        if cmd in {"in", "restock", "available"}:         
             return {"cmd": "IN", "name": arg_text}
-        if cmd == "/confirm":
+        if cmd in {"confirm", "paid", "approve", "done"}: 
             return {"cmd": "CONFIRM", "target": arg_text}
         if cmd == "/add":
             if "|" in arg_text:
