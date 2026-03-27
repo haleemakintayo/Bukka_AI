@@ -4,6 +4,7 @@ import logging
 import requests
 import time
 import re
+import httpx
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
@@ -48,6 +49,110 @@ OWNER_HELP_TEXT = (
     "• `stock add <food> <qty>` (e.g., stock add Jollof 20)\n"
     "• `stock waste <food> <qty>` (e.g., stock waste Chicken 2)"
 )
+
+
+# =====================================================================
+# WHATSAPP MESSAGE SENDING UTILITY
+# =====================================================================
+
+def send_whatsapp_message(to_number: str, message_text: str) -> bool:
+    """
+    Send a text message via Meta's WhatsApp Cloud API (v18.0+).
+    
+    Args:
+        to_number: Recipient's phone number (e.g., "2348012345678")
+        message_text: The message body text
+        
+    Returns:
+        True if message was queued successfully, False otherwise
+        
+    Environment Requirements:
+        - META_API_TOKEN: Your Meta WhatsApp API access token
+        - WHATSAPP_PHONE_ID: Your WhatsApp Business account phone ID
+        
+    Raises:
+        HTTPError: Re-raised as RuntimeError for logging
+    """
+    if not META_TOKEN:
+        logger.error("META_API_TOKEN environment variable not set")
+        return False
+
+    if not PHONE_ID:
+        logger.error("WHATSAPP_PHONE_ID environment variable not set")
+        return False
+
+    if not to_number or not message_text:
+        logger.warning("Invalid parameters: to_number or message_text is empty")
+        return False
+
+    # Clean phone number (remove spaces, dashes, +)
+    clean_number = re.sub(r"[^\d]", "", to_number)
+    if not clean_number:
+        logger.warning("Invalid phone number: %s", to_number)
+        return False
+
+    # Meta Graph API endpoint
+    url = f"https://graph.facebook.com/v18.0/{PHONE_ID}/messages"
+
+    # Standard Meta text message payload
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": clean_number,
+        "type": "text",
+        "text": {
+            "body": message_text,
+        },
+    }
+
+    headers = {
+        "Authorization": f"Bearer {META_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        # Use httpx for async-friendly HTTP client (if needed later)
+        response = httpx.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=30.0,
+        )
+        response.raise_for_status()
+
+        result = response.json()
+        message_id = result.get("messages", [{}])[0].get("id")
+        
+        if message_id:
+            logger.info(
+                "WhatsApp message sent - to=%s, msg_id=%s",
+                clean_number,
+                message_id,
+            )
+            return True
+        else:
+            logger.warning(
+                "WhatsApp message sent but no message ID received - to=%s",
+                clean_number,
+            )
+            return True  # Still consider it sent if no error
+
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            "WhatsApp API error [%d] - %s - to=%s",
+            e.response.status_code,
+            e.response.text,
+            clean_number,
+        )
+        return False
+    except httpx.RequestError as e:
+        logger.error("WhatsApp request error - %s - to=%s", str(e), clean_number)
+        return False
+    except Exception as e:
+        logger.exception("Unexpected error sending WhatsApp message: %s", e)
+        return False
+
+
+
 
 
 def get_current_time_ms():
