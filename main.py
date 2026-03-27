@@ -2,9 +2,10 @@
 import uvicorn
 import logging
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api.endpoints import telegram, whatsapp, demo
+from app.api.endpoints import telegram, whatsapp, demo, admin
 
 logging.basicConfig(
     level=logging.INFO,
@@ -16,6 +17,9 @@ app = FastAPI(
     description="Backend for Bukka AI - Powered by Llama & Groq",
     version="1.0"
 )
+
+# Mount the static directory to serve files like QR codes
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Tightened for backend safety. Add deployed frontend domain(s) explicitly.
 ALLOWED_ORIGINS = ['*']
@@ -32,6 +36,7 @@ app.add_middleware(
 app.include_router(telegram.router, prefix="/telegram", tags=["Telegram"])
 app.include_router(whatsapp.router, tags=["WhatsApp"]) 
 app.include_router(demo.router, prefix="/demo", tags=["Demo"])
+app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 
 
 @app.get("/")
