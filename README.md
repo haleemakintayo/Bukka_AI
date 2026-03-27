@@ -102,50 +102,21 @@ Vendors manage their shop directly inside messaging apps:
 
 ---
 
-## 📡 API Endpoints
+## 📡 API Documentation
 
-### **Telegram Webhook** 
-```
-POST /telegram/webhook
-```
-Receives incoming Telegram messages and processes them asynchronously.
+For a complete and detailed reference of all available API endpoints, including request/response schemas and authentication requirements, please see the official API documentation.
 
-### **WhatsApp Verification** 
-```
-GET /webhook
-  ?hub.mode=subscribe
-  &hub.verify_token=YOUR_TOKEN
-  &hub.challenge=CHALLENGE_STRING
-```
-Webhook registration endpoint for Meta's WhatsApp Cloud API.
+**[➡️ View Full API Documentation (api.md)](./api.md)**
 
-### **WhatsApp Messages**
-```
-POST /webhook
-Content-Type: application/json
-X-Hub-Signature-256: sha256=SIGNATURE
+### Quick Reference
 
-{
-  "object": "whatsapp_business_account",
-  "entry": [{
-    "id": "123456789",
-    "changes": [{
-      "value": {
-        "messaging_product": "whatsapp",
-        "contacts": [{"profile": {"name": "Customer Name"}, "wa_id": "2348012345678"}],
-        "messages": [{
-          "from": "2348012345678",
-          "id": "wamid.HBg...",
-          "timestamp": "1234567890",
-          "type": "text",
-          "text": {"body": "I want Jollof rice"}
-        }]
-      }
-    }]
-  }]
-}
-```
-Receives incoming WhatsApp messages with automatic background processing.
+*   `POST /admin/onboard`: Onboards a new vendor and generates their QR code.
+*   `POST /telegram/webhook`: Receives incoming messages from Telegram.
+*   `GET /webhook`: Handles webhook verification for the WhatsApp Cloud API.
+*   `POST /webhook`: Receives incoming messages from WhatsApp.
+*   `GET /demo/chats`: Retrieves chat history for the demo frontend.
+*   `POST /demo/reset`: Clears the demo chat history.
+*   `GET /`: Root health check endpoint.
 
 ---
 
@@ -386,5 +357,3 @@ Bukka_AI/
 For issues, feature requests, or contributions, please open an issue on GitHub.
 
 **Built with ❤️ for African food vendors**
-
-
