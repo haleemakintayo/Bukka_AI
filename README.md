@@ -110,12 +110,12 @@ For a complete and detailed reference of all available API endpoints, including 
 
 ### Quick Reference
 
-*   `POST /admin/onboard`: Onboards a new vendor and generates their QR code.
-*   `POST /telegram/webhook`: Receives incoming messages from Telegram.
-*   `GET /webhook`: Handles webhook verification for the WhatsApp Cloud API.
-*   `POST /webhook`: Receives incoming messages from WhatsApp.
-*   `GET /demo/chats`: Retrieves chat history for the demo frontend.
-*   `POST /demo/reset`: Clears the demo chat history.
+*   `POST /api/v1/admin/onboard`: Onboards a new vendor and generates their QR code.
+*   `POST /api/v1/telegram/webhook`: Receives incoming messages from Telegram.
+*   `GET /api/v1/webhook`: Handles webhook verification for the WhatsApp Cloud API.
+*   `POST /api/v1/webhook`: Receives incoming messages from WhatsApp.
+*   `GET /api/v1/demo/chats`: Retrieves chat history for the demo frontend.
+*   `POST /api/v1/demo/reset`: Clears the demo chat history.
 *   `GET /`: Root health check endpoint.
 
 ---
@@ -294,8 +294,8 @@ curl --location 'https://graph.instagram.com/v18.0/YOUR_PHONE_ID/subscribed_apps
   --header 'Content-Type: application/json' \
   --data '{"subscribed_fields": ["messages", "message_status"]}'
 
-# Webhook callback URL in your Meta Dashboard:
-# https://yourdomain.com/webhook
+# Webhook callback URL in your Meta Dashboard (note the /api/v1 prefix):
+# https://yourdomain.com/api/v1/webhook
 # Verify Token: (the value of WHATSAPP_VERIFY_TOKEN)
 ```
 

@@ -30,7 +30,7 @@ These endpoints are used for administrative tasks like vendor management.
 
 ### Onboard New Vendor
 
-- **`POST /admin/onboard`**
+- **`POST /api/v1/admin/onboard`**
 
   Onboards a new vendor, creates a unique vendor ID, generates a WhatsApp click-to-chat QR code, and saves it to the static directory.
 
@@ -61,7 +61,7 @@ These endpoints are the entry points for incoming messages from messaging platfo
 
 ### WhatsApp Webhook Verification
 
-- **`GET /webhook`**
+- **`GET /api/v1/webhook`**
 
   Used by Meta to verify the webhook endpoint during setup. The endpoint must echo back the `hub.challenge` value if the `hub.verify_token` is valid.
 
@@ -77,7 +77,7 @@ These endpoints are the entry points for incoming messages from messaging platfo
 
 ### Receive WhatsApp Message
 
-- **`POST /webhook`**
+- **`POST /api/v1/webhook`**
 
   Receives incoming messages and status updates from the WhatsApp Cloud API. The request body is signed with HMAC-SHA256 using your App Secret.
 
@@ -101,7 +101,7 @@ These endpoints are the entry points for incoming messages from messaging platfo
 
 ### Receive Telegram Message
 
-- **`POST /telegram/webhook`**
+- **`POST /api/v1/telegram/webhook`**
 
   Receives incoming messages and updates from the Telegram Bot API.
 
@@ -129,7 +129,7 @@ These endpoints are for demonstration and testing purposes.
 
 ### Get Demo Chats
 
-- **`GET /demo/chats`**
+- **`GET /api/v1/demo/chats`**
 
   Retrieves the last 50 messages from the database for display on a demo frontend.
 
@@ -139,7 +139,7 @@ These endpoints are for demonstration and testing purposes.
 
 ### Reset Demo Chats
 
-- **`POST /demo/reset`**
+- **`POST /api/v1/demo/reset`**
 
   Deletes all messages from the `messages` table to reset the demo state. This is a destructive action protected by a token.
 
